@@ -5,7 +5,7 @@ const expressAsyncHandler = require('express-async-handler');
 const AppError = require('../utils/AppError');
 const HistoricalSwingData = require('../models/Swing');
 const { generateSessionAndFeedToken } = require('../utils/AppSession');
-const { MAX_DAYS, INTERVAL_MAP } = require('../utils/Constants');
+const { MAX_DAYS, INTERVAL_MAP } = require('../utils/constants');
 
 exports.getLiveMarketData = expressAsyncHandler(async (req, res, next) => {
   try {
