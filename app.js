@@ -5,9 +5,9 @@ const dotenv = require('dotenv').config({ path: '.env' });
 const cookieParser = require('cookie-parser');
 const logger = require('morgan');
 const GlobalErrorHandler = require('./controllers/ErrorController');
-const connectDB = require('./db');
+// const connectDB = require('./db');
 
-connectDB();
+// connectDB();
 
 const indexRouter = require('./routes/index');
 const swingRouter = require('./routes/swing');
