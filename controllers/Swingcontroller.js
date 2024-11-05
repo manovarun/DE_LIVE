@@ -109,7 +109,7 @@ exports.HistoSwing = expressAsyncHandler(async (req, res, next) => {
 });
 
 // Controller to fetch and save historical data iteratively
-exports.getSwingHistoricLive = expressAsyncHandler(async (req, res, next) => {
+exports.saveHistoSwingData = expressAsyncHandler(async (req, res, next) => {
   try {
     // Step 1: Get session and feed token
     const { feedToken, smartApi } = await generateSessionAndFeedToken();
@@ -177,11 +177,18 @@ exports.getSwingHistoricLive = expressAsyncHandler(async (req, res, next) => {
         volume: candle[5],
       }));
 
-      res.status(200).json({
-        status: 'success',
-        candles,
-        message: 'Historical data fetched and saved successfully',
-      });
+      // Save data without duplicating entries
+      for (const record of candles) {
+        await HistoricalSwingData.updateOne(
+          {
+            datetime: record.datetime,
+            timeInterval: record.timeInterval,
+            stockSymbol: record.stockSymbol,
+          },
+          { $setOnInsert: record },
+          { upsert: true } // Insert if not existing
+        );
+      }
 
       // Move to the next chunk
       fromDateMoment = toDateMoment.add(1, 'minute'); // Move fromDate to one minute after the current toDate
@@ -189,10 +196,95 @@ exports.getSwingHistoricLive = expressAsyncHandler(async (req, res, next) => {
 
     res.status(200).json({
       status: 'success',
-      message: 'Historical data fetched and saved successfully',
+      message: `Historical data fetched for ${symbol} with ${timeInterval}  and saved successfully`,
     });
   } catch (error) {
     console.error('Error during saving historical data:', error);
+    next(new AppError('Failed to save the historical data', 500));
+  }
+});
+
+exports.getSwingHistoricLive = expressAsyncHandler(async (req, res, next) => {
+  try {
+    // Step 1: Get session and feed token
+    const { feedToken, smartApi } = await generateSessionAndFeedToken();
+
+    // Step 2: Extract parameters from req.body (token, symbol, name, fromDate, endDate, interval)
+    const { token, symbol, name, fromDate, endDate, interval } = req.body;
+
+    if (!interval) {
+      return next(new AppError('Please provide a valid interval', 400));
+    }
+
+    // Ensure interval is valid
+    if (!MAX_DAYS[interval]) {
+      return next(new AppError('Invalid interval provided', 400));
+    }
+
+    const maxDays = MAX_DAYS[interval];
+    const timeInterval = INTERVAL_MAP[interval];
+
+    // Set the initial fromDate and endDate using moment.js
+    let fromDateMoment = moment(fromDate, 'YYYY-MM-DD HH:mm', true);
+    const endDateMoment = moment(endDate, 'YYYY-MM-DD HH:mm', true);
+
+    // Validate the dates after parsing
+    if (!fromDateMoment.isValid() || !endDateMoment.isValid()) {
+      return next(new AppError('Invalid date format provided', 400));
+    }
+
+    const stockToken = token || symbol || name; // Fetch token from req.body
+    if (!stockToken) {
+      return next(
+        new AppError('Please provide a valid token, symbol, or name', 400)
+      );
+    }
+
+    let candles = [];
+
+    // Loop to fetch data until we reach the end date
+    while (fromDateMoment.isBefore(endDateMoment)) {
+      let toDateMoment = moment(fromDateMoment).add(maxDays, 'days');
+      if (toDateMoment.isAfter(endDateMoment)) {
+        toDateMoment = endDateMoment;
+      }
+
+      // Fetch historical data for the current chunk
+      const histoData = await smartApi.getCandleData({
+        exchange: 'NSE',
+        symboltoken: stockToken,
+        interval,
+        fromdate: fromDateMoment.format('YYYY-MM-DD HH:mm'),
+        todate: toDateMoment.format('YYYY-MM-DD HH:mm'),
+      });
+
+      // Ensure the data is valid
+      if (!histoData || !histoData.status || !histoData.data.length) {
+        return next(new AppError('Error fetching historical data', 400));
+      }
+
+      candles = histoData.data.map((candle) => ({
+        datetime: candle[0], // Store the datetime as a string to preserve the timezone
+        timeInterval,
+        stockSymbol: symbol,
+        open: candle[1],
+        high: candle[2],
+        low: candle[3],
+        close: candle[4],
+        volume: candle[5],
+      }));
+
+      // Move to the next chunk
+      fromDateMoment = toDateMoment.add(1, 'minute'); // Move fromDate to one minute after the current endDate
+    }
+
+    res.status(200).json({
+      status: 'success',
+      candles,
+      message: 'Historical data fetched and saved successfully',
+    });
+  } catch (error) {
+    console.error('Error during fetching historical data:', error);
     next(new AppError('Failed to save the historical data', 500));
   }
 });

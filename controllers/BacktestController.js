@@ -64,35 +64,3 @@ exports.getSymbolData = expressAsyncHandler(async (req, res, next) => {
     next(new AppError('Error fetching data from the live URL', 400));
   }
 });
-
-const fetchOptionTokens = async (expiry, strike) => {
-  try {
-    const filePath = './OpenAPIScripMaster.json';
-    // Fetch the live OpenAPIScripMaster data
-    const data = fs.readFileSync(filePath, 'utf8');
-
-    const scripMaster = JSON.parse(data);
-
-    // Filter for the specific expiry, strike, and Nifty options (CE and PE)
-    const ceToken = scripMaster.find(
-      (item) =>
-        item.expiry === expiry &&
-        item.strike === strike &&
-        item.symbol.includes('CE') &&
-        item.name === 'NIFTY'
-    );
-
-    const peToken = scripMaster.find(
-      (item) =>
-        item.expiry === expiry &&
-        item.strike === strike &&
-        item.symbol.includes('PE') &&
-        item.name === 'NIFTY'
-    );
-
-    return { ceToken: ceToken.token, peToken: peToken.token };
-  } catch (error) {
-    console.error('Error fetching tokens:', error);
-    throw new AppError('Unable to fetch option tokens.', 400);
-  }
-};
