@@ -12,10 +12,6 @@ exports.getLiveSocketData = expressAsyncHandler(async (req, res, next) => {
 
     // const profileData = await smartApi.getProfile();
 
-    console.log('Feed Token:', feedToken);
-    console.log('API Key:', apiKey);
-    console.log('Client Code:', clientCode);
-
     // Validate that all tokens are not empty
     if (!feedToken || !apiKey || !clientCode) {
       next(
@@ -31,7 +27,7 @@ exports.getLiveSocketData = expressAsyncHandler(async (req, res, next) => {
       jwttoken: feedToken, // JWT Token should be the feedToken generated
       apikey: apiKey,
       clientcode: clientCode,
-      feedtype: 'stream', // Use 'stream' or 'mw' based on your requirement
+      feedtype: feedToken, // Use 'stream' or 'mw' based on your requirement
     });
 
     // Connect to the WebSocket
@@ -53,8 +49,22 @@ exports.getLiveSocketData = expressAsyncHandler(async (req, res, next) => {
 
         // Handle the received data (ticks)
         webSocket.on('tick', (data) => {
-          console.log('Real-time Tick Data:', data);
-          // You can add logic here to handle data, e.g., store in DB or return response
+          const parsedData = {
+            mode: data.subscription_mode,
+            exchange: data.exchange_type === '1' ? 'NSE' : 'BSE',
+            instrumentToken: data.token
+              ? data.token.replace(/"/g, '')
+              : 'Unknown', // Check if data.token is defined
+            sequence: data.sequence_number,
+            timestamp: data.exchange_timestamp
+              ? new Date(parseInt(data.exchange_timestamp)).toLocaleString()
+              : 'Unknown',
+            lastTradedPrice: data.last_traded_price
+              ? parseFloat(data.last_traded_price) / 100
+              : 'N/A', // Assuming price in paise
+          };
+
+          console.log('Parsed Real-time Tick Data:', parsedData);
         });
 
         // Error handling for WebSocket
