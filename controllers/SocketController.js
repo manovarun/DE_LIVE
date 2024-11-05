@@ -3,34 +3,6 @@ const { generateSessionAndFeedToken } = require('../utils/AppSession');
 const AppError = require('../utils/AppError');
 let { WebSocket, WebSocketV2 } = require('smartapi-javascript');
 
-exports.getLiveMarketData = expressAsyncHandler(async (req, res, next) => {
-  try {
-    const { feedToken, smartApi } = await generateSessionAndFeedToken();
-
-    const clientCode = process.env.SMARTAPI_CLIENT_CODE;
-
-    const profileData = await smartApi.getProfile();
-
-    const nifty50Tokens = ['3045', '881', '3456'];
-
-    const MarketData = await smartApi.marketData({
-      mode: 'FULL',
-      exchangeTokens: {
-        NSE: [...nifty50Tokens],
-      },
-    });
-
-    res.status(200).json({
-      status: 'success',
-      profileData,
-      MarketData,
-    });
-  } catch (error) {
-    console.error('Error checking filter conditions:', error);
-    next(new AppError('Failed to check filter conditions', 500));
-  }
-});
-
 exports.getLiveSocketData = expressAsyncHandler(async (req, res, next) => {
   try {
     const { feedToken, smartApi } = await generateSessionAndFeedToken();
@@ -73,7 +45,7 @@ exports.getLiveSocketData = expressAsyncHandler(async (req, res, next) => {
           action: 1, // 1 = subscribe, 0 = unsubscribe
           mode: 1, // 1 = LTP (Last Traded Price), 2 = QUOTE, 3 = SNAPQUOTE, etc.
           exchangeType: 1, // 1 = NSE, 2 = BSE, etc.
-          tokens: ['3045', '881'], // Replace with actual tokens for stocks
+          tokens: ['3045'], // Replace with actual tokens for stocks
         };
 
         // Fetch and start receiving data

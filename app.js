@@ -11,6 +11,7 @@ const GlobalErrorHandler = require('./controllers/ErrorController');
 
 const indexRouter = require('./routes/index');
 const swingRouter = require('./routes/swing');
+const socketRouter = require('./routes/socket');
 
 const app = express();
 
@@ -26,6 +27,7 @@ app.use(express.static(path.join(__dirname, 'public')));
 
 app.use('/', indexRouter);
 app.use('/api/swing', swingRouter);
+app.use('/api/socket', socketRouter);
 
 app.use(GlobalErrorHandler);
 
