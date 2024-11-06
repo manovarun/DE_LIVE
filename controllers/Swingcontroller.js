@@ -7,6 +7,87 @@ const HistoricalSwingData = require('../models/Swing');
 const { generateSessionAndFeedToken } = require('../utils/AppSession');
 const { MAX_DAYS, INTERVAL_MAP } = require('../utils/constants');
 
+exports.getNifty50Tokens = expressAsyncHandler(async (req, res, next) => {
+  // List of NIFTY 50 symbols
+  const nifty50Symbols = [
+    'ADANIENT-EQ',
+    'ADANIPORTS-EQ',
+    'APOLLOHOSP-EQ',
+    'ASIANPAINT-EQ',
+    'AXISBANK-EQ',
+    'BAJAJ-AUTO-EQ',
+    'BAJAJFINSV-EQ',
+    'BAJFINANCE-EQ',
+    'BHARTIARTL-EQ',
+    'BPCL-EQ',
+    'BRITANNIA-EQ',
+    'CIPLA-EQ',
+    'COALINDIA-EQ',
+    'DIVISLAB-EQ',
+    'DRREDDY-EQ',
+    'EICHERMOT-EQ',
+    'GRASIM-EQ',
+    'HCLTECH-EQ',
+    'HDFCBANK-EQ',
+    'HDFCLIFE-EQ',
+    'HEROMOTOCO-EQ',
+    'HINDALCO-EQ',
+    'HINDUNILVR-EQ',
+    'ICICIBANK-EQ',
+    'INDUSINDBK-EQ',
+    'INFY-EQ',
+    'ITC-EQ',
+    'JSWSTEEL-EQ',
+    'KOTAKBANK-EQ',
+    'LT-EQ',
+    'M&M-EQ',
+    'MARUTI-EQ',
+    'NESTLEIND-EQ',
+    'NTPC-EQ',
+    'ONGC-EQ',
+    'POWERGRID-EQ',
+    'RELIANCE-EQ',
+    'SBILIFE-EQ',
+    'SBIN-EQ',
+    'SUNPHARMA-EQ',
+    'TATACONSUM-EQ',
+    'TATAMOTORS-EQ',
+    'TATASTEEL-EQ',
+    'TCS-EQ',
+    'TECHM-EQ',
+    'TITAN-EQ',
+    'ULTRACEMCO-EQ',
+    'UPL-EQ',
+    'WIPRO-EQ',
+  ];
+
+  // Read the JSON file
+  fs.readFile('./OpenAPIScripMaster.json', 'utf8', (err, data) => {
+    if (err) {
+      console.error('Error reading JSON file:', err);
+      return res.status(500).json({ error: 'Failed to read data' });
+    }
+
+    // Parse JSON data
+    const jsonData = JSON.parse(data);
+    const result = [];
+
+    // Search for each NIFTY 50 symbol in the JSON data
+    jsonData.forEach((item) => {
+      if (nifty50Symbols.includes(item.symbol)) {
+        result.push({
+          token: item.token,
+          symbol: item.symbol,
+          name: item.name,
+        });
+      }
+    });
+
+    // Send the response with the formatted result
+    res.json(result);
+  });
+});
+
 exports.getLiveMarketData = expressAsyncHandler(async (req, res, next) => {
   try {
     const { feedToken, smartApi } = await generateSessionAndFeedToken();
@@ -203,6 +284,124 @@ exports.saveHistoSwingData = expressAsyncHandler(async (req, res, next) => {
     next(new AppError('Failed to save the historical data', 500));
   }
 });
+
+// Controller to fetch and save historical data iteratively
+exports.saveHistoSwingMultipleData = expressAsyncHandler(
+  async (req, res, next) => {
+    try {
+      const { feedToken, smartApi } = await generateSessionAndFeedToken();
+
+      // Step 2: Extract parameters from req.body
+      const { stocks, fromDate, endDate, interval } = req.body;
+
+      if (!interval) {
+        return next(new AppError('Please provide a valid interval', 400));
+      }
+
+      // Ensure interval is valid
+      if (!MAX_DAYS[interval]) {
+        return next(new AppError('Invalid interval provided', 400));
+      }
+
+      const maxDays = MAX_DAYS[interval];
+      const timeInterval = INTERVAL_MAP[interval];
+
+      // Validate that fromDate and endDate are provided
+      if (!fromDate || !endDate) {
+        return next(
+          new AppError('Please provide both fromDate and endDate', 400)
+        );
+      }
+
+      // Parse the dates
+      let fromDateMoment = moment(fromDate, 'YYYY-MM-DD HH:mm', true);
+      const endDateMoment = moment(endDate, 'YYYY-MM-DD HH:mm', true);
+
+      // Validate the dates after parsing
+      if (!fromDateMoment.isValid() || !endDateMoment.isValid()) {
+        return next(new AppError('Invalid date format provided', 400));
+      }
+
+      // Ensure stocks array is provided and valid
+      if (!Array.isArray(stocks) || stocks.length === 0) {
+        return next(
+          new AppError('Please provide a valid array of stocks', 400)
+        );
+      }
+
+      // Iterate over each stock to fetch and save data
+      for (const stock of stocks) {
+        const { token, symbol, name } = stock;
+        const stockToken = token || symbol || name;
+
+        if (!stockToken) {
+          console.log(`Skipping stock with missing token/symbol/name:`, stock);
+          continue; // Skip if the stockToken is missing
+        }
+
+        fromDateMoment = moment(fromDate, 'YYYY-MM-DD HH:mm', true); // Reset fromDate for each stock
+
+        // Loop to fetch data until we reach the end date for the current stock
+        while (fromDateMoment.isBefore(endDateMoment)) {
+          let toDateMoment = moment(fromDateMoment).add(maxDays, 'days');
+          if (toDateMoment.isAfter(endDateMoment)) {
+            toDateMoment = endDateMoment;
+          }
+
+          // Fetch historical data for the current chunk
+          const histoData = await smartApi.getCandleData({
+            exchange: 'NSE',
+            symboltoken: stockToken,
+            interval,
+            fromdate: fromDateMoment.format('YYYY-MM-DD HH:mm'),
+            todate: toDateMoment.format('YYYY-MM-DD HH:mm'),
+          });
+
+          // Ensure the data is valid
+          if (!histoData || !histoData.status || !histoData.data.length) {
+            console.log(`Error fetching data for ${symbol || stockToken}`);
+            continue; // Skip to the next chunk if data fetch failed
+          }
+
+          const candles = histoData.data.map((candle) => ({
+            datetime: candle[0],
+            timeInterval,
+            stockSymbol: symbol || stockToken,
+            open: candle[1],
+            high: candle[2],
+            low: candle[3],
+            close: candle[4],
+            volume: candle[5],
+          }));
+
+          // Save data without duplicating entries
+          for (const record of candles) {
+            await HistoricalSwingData.updateOne(
+              {
+                datetime: record.datetime,
+                timeInterval: record.timeInterval,
+                stockSymbol: record.stockSymbol,
+              },
+              { $setOnInsert: record },
+              { upsert: true } // Insert if not existing
+            );
+          }
+
+          // Move to the next chunk
+          fromDateMoment = toDateMoment.add(1, 'minute');
+        }
+      }
+
+      res.status(200).json({
+        status: 'success',
+        message: `Historical data fetched and saved successfully for all stocks.`,
+      });
+    } catch (error) {
+      console.error('Error during saving historical data:', error);
+      next(new AppError('Failed to save the historical data', 500));
+    }
+  }
+);
 
 exports.getSwingHistoricLive = expressAsyncHandler(async (req, res, next) => {
   try {
