@@ -504,62 +504,72 @@ exports.saveHistoSwingMultipleData = expressAsyncHandler(
   }
 );
 
+const getEarliestListingDate = async (smartApi, stockToken) => {
+  try {
+    const earliestData = await smartApi.getCandleData({
+      exchange: 'NSE',
+      symboltoken: stockToken,
+      interval: 'ONE_DAY',
+      fromdate: '2000-01-01 00:00',
+      todate: moment().format('YYYY-MM-DD HH:mm'), // Current date as end date
+    });
+
+    if (earliestData && earliestData.data && earliestData.data.length) {
+      return moment(earliestData.data[0][0], 'YYYY-MM-DD HH:mm'); // First available date
+    }
+  } catch (error) {
+    console.error('Error fetching listing date:', error);
+  }
+
+  return null; // Return null if date cannot be determined
+};
+
 exports.saveHistoSwingDataMultiInterval = expressAsyncHandler(
   async (req, res, next) => {
     try {
-      // Step 1: Get session and feed token
       const { feedToken, smartApi } = await generateSessionAndFeedToken();
-
-      const profileData = await smartApi.getProfile();
-
-      // Step 2: Extract parameters from req.body (token, symbol, name, fromDate, endDate, intervals)
       const { token, symbol, name, fromDate, endDate, intervals } = req.body;
 
       if (!intervals || !Array.isArray(intervals) || intervals.length === 0) {
         return next(new AppError('Please provide valid intervals', 400));
       }
 
-      // Validate intervals
-      for (const interval of intervals) {
-        if (!MAX_DAYS[interval]) {
-          return next(
-            new AppError(`Invalid interval provided: ${interval}`, 400)
-          );
-        }
-      }
-
       // Set the initial fromDate and endDate using moment.js
-      let fromDateMoment = moment(fromDate, 'YYYY-MM-DD HH:mm', true);
+      let fromDateMoment = moment(fromDate, 'YYYY-MM-DD HH:mm', true); // Changed to let
       const endDateMoment = moment(endDate, 'YYYY-MM-DD HH:mm', true);
 
-      // Validate the dates after parsing
+      const stockToken = token || symbol || name;
+
       if (!fromDateMoment.isValid() || !endDateMoment.isValid()) {
         return next(new AppError('Invalid date format provided', 400));
       }
 
-      const stockToken = token || symbol || name; // Fetch token from req.body
-      if (!stockToken) {
-        return next(
-          new AppError('Please provide a valid token, symbol, or name', 400)
+      // Step 1: Get earliest listing date
+      const earliestListingDate = await getEarliestListingDate(
+        smartApi,
+        stockToken
+      );
+
+      if (earliestListingDate && fromDateMoment.isBefore(earliestListingDate)) {
+        fromDateMoment = moment(earliestListingDate); // Adjust to listing date
+        console.log(
+          `Adjusted fromDate to listing date: ${fromDateMoment.format(
+            'YYYY-MM-DD HH:mm'
+          )}`
         );
       }
 
-      // Loop over each interval
       for (const interval of intervals) {
         const maxDays = MAX_DAYS[interval];
         const timeInterval = INTERVAL_MAP[interval];
-
-        // Reset the fromDate for each interval
         let currentFromDateMoment = moment(fromDateMoment);
 
-        // Loop to fetch data until we reach the end date for the given interval
         while (currentFromDateMoment.isBefore(endDateMoment)) {
           let toDateMoment = moment(currentFromDateMoment).add(maxDays, 'days');
           if (toDateMoment.isAfter(endDateMoment)) {
             toDateMoment = endDateMoment;
           }
 
-          // Fetch historical data for the current chunk
           const histoData = await smartApi.getCandleData({
             exchange: 'NSE',
             symboltoken: stockToken,
@@ -568,13 +578,12 @@ exports.saveHistoSwingDataMultiInterval = expressAsyncHandler(
             todate: toDateMoment.format('YYYY-MM-DD HH:mm'),
           });
 
-          // Ensure the data is valid
           if (!histoData || !histoData.status || !histoData.data.length) {
             return next(new AppError('Error fetching historical data', 400));
           }
 
           const candles = histoData.data.map((candle) => ({
-            datetime: candle[0], // Store the datetime as a string to preserve the timezone
+            datetime: candle[0],
             timeInterval,
             stockSymbol: symbol,
             open: candle[1],
@@ -584,7 +593,6 @@ exports.saveHistoSwingDataMultiInterval = expressAsyncHandler(
             volume: candle[5],
           }));
 
-          // Save data without duplicating entries
           for (const record of candles) {
             await HistoricalSwingData.updateOne(
               {
@@ -593,12 +601,11 @@ exports.saveHistoSwingDataMultiInterval = expressAsyncHandler(
                 stockSymbol: record.stockSymbol,
               },
               { $setOnInsert: record },
-              { upsert: true } // Insert if not existing
+              { upsert: true }
             );
           }
 
-          // Move to the next chunk
-          currentFromDateMoment = toDateMoment.add(1, 'minute'); // Move fromDate to one minute after the current toDate
+          currentFromDateMoment = toDateMoment.add(1, 'minute');
         }
       }
 
