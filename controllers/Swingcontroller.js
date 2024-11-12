@@ -620,6 +620,125 @@ exports.saveHistoSwingDataMultiInterval = expressAsyncHandler(
   }
 );
 
+exports.saveHistoSwingDataMultiIntervalMultiStock = expressAsyncHandler(
+  async (req, res, next) => {
+    try {
+      const { feedToken, smartApi } = await generateSessionAndFeedToken();
+      const { stocks, intervals } = req.body;
+
+      if (!stocks || !Array.isArray(stocks) || stocks.length === 0) {
+        return next(
+          new AppError('Please provide a valid array of stocks', 400)
+        );
+      }
+
+      if (!intervals || !Array.isArray(intervals) || intervals.length === 0) {
+        return next(new AppError('Please provide valid intervals', 400));
+      }
+
+      for (const stock of stocks) {
+        const { token, symbol, name, fromDate, endDate } = stock;
+        let fromDateMoment = moment(fromDate, 'YYYY-MM-DD HH:mm', true);
+        const endDateMoment = moment(endDate, 'YYYY-MM-DD HH:mm', true);
+
+        if (!fromDateMoment.isValid() || !endDateMoment.isValid()) {
+          console.error(`Invalid date format for ${symbol}`);
+          continue;
+        }
+
+        const stockToken = token || symbol || name;
+
+        // Get the earliest available listing date
+        const earliestListingDate = await getEarliestListingDate(
+          smartApi,
+          stockToken
+        );
+
+        if (
+          earliestListingDate &&
+          fromDateMoment.isBefore(earliestListingDate)
+        ) {
+          fromDateMoment = moment(earliestListingDate);
+          console.log(
+            `Adjusted fromDate for ${symbol} to listing date: ${fromDateMoment.format(
+              'YYYY-MM-DD HH:mm'
+            )}`
+          );
+        }
+
+        for (const interval of intervals) {
+          const maxDays = MAX_DAYS[interval];
+          const timeInterval = INTERVAL_MAP[interval];
+          let currentFromDateMoment = moment(fromDateMoment);
+
+          while (currentFromDateMoment.isBefore(endDateMoment)) {
+            let toDateMoment = moment(currentFromDateMoment).add(
+              maxDays,
+              'days'
+            );
+            if (toDateMoment.isAfter(endDateMoment)) {
+              toDateMoment = endDateMoment;
+            }
+
+            const histoData = await smartApi.getCandleData({
+              exchange: 'NSE',
+              symboltoken: stockToken,
+              interval,
+              fromdate: currentFromDateMoment.format('YYYY-MM-DD HH:mm'),
+              todate: toDateMoment.format('YYYY-MM-DD HH:mm'),
+            });
+
+            if (
+              !histoData ||
+              !histoData.status ||
+              !histoData.data ||
+              !histoData.data.length
+            ) {
+              console.error(
+                `Error fetching data for ${symbol} at interval ${interval}`
+              );
+              break;
+            }
+
+            const candles = histoData.data.map((candle) => ({
+              datetime: candle[0],
+              timeInterval,
+              stockSymbol: symbol,
+              open: candle[1],
+              high: candle[2],
+              low: candle[3],
+              close: candle[4],
+              volume: candle[5],
+            }));
+
+            for (const record of candles) {
+              await HistoricalSwingData.updateOne(
+                {
+                  datetime: record.datetime,
+                  timeInterval: record.timeInterval,
+                  stockSymbol: record.stockSymbol,
+                },
+                { $setOnInsert: record },
+                { upsert: true }
+              );
+            }
+
+            currentFromDateMoment = toDateMoment.add(1, 'minute');
+          }
+        }
+      }
+
+      res.status(200).json({
+        status: 'success',
+        message: `Historical data fetched and saved successfully for multiple stocks.`,
+      });
+    } catch (error) {
+      console.error('Error during saving historical data:', error);
+      next(new AppError('Failed to save the historical data', 500));
+    }
+  }
+);
+
 exports.getSwingHistoricLive = expressAsyncHandler(async (req, res, next) => {
   try {
     // Step 1: Get session and feed token

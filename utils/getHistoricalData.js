@@ -1,7 +1,6 @@
 const moment = require('moment');
 const HistoricalSwingData = require('../models/Swing');
 
-// Function to get historical data
 const getHistoricalData = async ({
   stockSymbol,
   interval,
@@ -9,16 +8,14 @@ const getHistoricalData = async ({
   toDate,
 }) => {
   try {
-    // Parse the dates with moment.js
-    const parsedFromDate = moment(fromDate, 'YYYY-MM-DD HH:mm')
-      .utcOffset('+05:30', true)
-      .format('YYYY-MM-DD HH:mm:ss');
+    // Format dates directly in IST without timezone conversion
+    const parsedFromDate = moment(fromDate, 'YYYY-MM-DD HH:mm').format(
+      'YYYY-MM-DD HH:mm:ss'
+    );
+    const parsedToDate = moment(toDate, 'YYYY-MM-DD HH:mm').format(
+      'YYYY-MM-DD HH:mm:ss'
+    );
 
-    const parsedToDate = moment(toDate, 'YYYY-MM-DD HH:mm')
-      .utcOffset('+05:30', true)
-      .format('YYYY-MM-DD HH:mm:ss');
-
-    // Prepare the query
     const query = {
       stockSymbol: stockSymbol.toUpperCase(),
       timeInterval: interval,
@@ -28,7 +25,6 @@ const getHistoricalData = async ({
       },
     };
 
-    // Query the database for historical data
     const historicalData = await HistoricalSwingData.find(query).sort({
       datetime: 1,
     });

@@ -14,6 +14,7 @@ const swingRouter = require('./routes/swing');
 const socketRouter = require('./routes/socket');
 const optionsRouter = require('./routes/options');
 const futureRouter = require('./routes/future');
+const backtestRouter = require('./routes/backtest');
 
 const app = express();
 
@@ -32,6 +33,7 @@ app.use('/api/swing', swingRouter);
 app.use('/api/socket', socketRouter);
 app.use('/api/options', optionsRouter);
 app.use('/api/future', futureRouter);
+app.use('/api/backtest', backtestRouter);
 
 app.use(GlobalErrorHandler);
 

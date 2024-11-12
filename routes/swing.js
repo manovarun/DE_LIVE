@@ -8,6 +8,7 @@ const {
   saveHistoSwingMultipleData,
   getNifty50Tokens,
   saveHistoSwingDataMultiInterval,
+  saveHistoSwingDataMultiIntervalMultiStock,
 } = require('../controllers/Swingcontroller');
 
 const router = express.Router();
@@ -17,6 +18,9 @@ router.route('/getNifty50Tokens').get(getNifty50Tokens);
 router.route('/swingsave').post(saveHistoSwingData);
 router.route('/swingmultisave').post(saveHistoSwingMultipleData);
 router.route('/swing-multiinterval').post(saveHistoSwingDataMultiInterval);
+router
+  .route('/swing-multi-interval-stock')
+  .post(saveHistoSwingDataMultiIntervalMultiStock);
 router.route('/liveswing').post(getSwingHistoricLive);
 router.route('/livemarket').post(getLiveMarketData);
 
