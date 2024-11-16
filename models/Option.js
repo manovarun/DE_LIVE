@@ -26,6 +26,7 @@ const HistoricalOptionDataSchema = new mongoose.Schema({
   optionType: {
     type: String, // 'CE' or 'PE'
     required: true,
+    enum: ['CE', 'PE'],
   },
   open: {
     type: Number,
@@ -48,14 +49,20 @@ const HistoricalOptionDataSchema = new mongoose.Schema({
     required: true,
   },
   openInterest: {
-    type: Number, // Add open interest to the schema
-    required: false,
+    type: Number, // Open interest data
+    required: true, // Make it required since we're storing both price and OI together
   },
 });
 
-// Create an index to prevent duplicate entries for the same datetime, timeInterval, and stockSymbol
+// Create an index to prevent duplicate entries for the same datetime, timeInterval, stockSymbol, strikePrice, and optionType
 HistoricalOptionDataSchema.index(
-  { datetime: 1, timeInterval: 1, stockSymbol: 1, strikePrice: 1 },
+  {
+    datetime: 1,
+    timeInterval: 1,
+    stockSymbol: 1,
+    strikePrice: 1,
+    optionType: 1,
+  },
   { unique: true }
 );
 

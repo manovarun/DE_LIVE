@@ -212,6 +212,132 @@ const getEarliestListingDate = async (smartApi, stockToken) => {
   }
   return null;
 };
+// Controller to fetch and save Open Interest (OI) data
+exports.getSymbolDataAndFetchOI = expressAsyncHandler(
+  async (req, res, next) => {
+    try {
+      // Path to the OpenAPIScripMaster.json file
+      const filePath = './OpenAPIScripMaster.json';
+
+      // Extract search criteria and data fetching parameters from the request body
+      const {
+        symbol,
+        name,
+        expiry,
+        strike,
+        exch_seg,
+        interval,
+        fromdate,
+        todate,
+      } = req.body;
+
+      // Validate required fields
+      if (!name || !expiry || !strike || !interval || !fromdate || !todate) {
+        return next(
+          new AppError(
+            'Please provide valid name, expiry, strike, interval, fromdate, and todate',
+            400
+          )
+        );
+      }
+
+      // Step 1: Read the OpenAPIScripMaster.json file
+      const data = fs.readFileSync(filePath, 'utf8');
+      const scripMaster = JSON.parse(data);
+
+      // Step 2: Filter instruments matching the criteria
+      const filteredInstruments = scripMaster.filter(
+        (item) =>
+          (!symbol || item.symbol === symbol) &&
+          (!name || item.name === name) &&
+          (!expiry || item.expiry === expiry) &&
+          (!strike || parseFloat(item.strike) === parseFloat(strike)) &&
+          (!exch_seg || item.exch_seg === exch_seg)
+      );
+
+      if (filteredInstruments.length === 0) {
+        return next(
+          new AppError(
+            `No instruments found for name: ${name}, expiry: ${expiry}, strike: ${strike}`,
+            404
+          )
+        );
+      }
+
+      console.log(`Found instruments: ${JSON.stringify(filteredInstruments)}`);
+
+      // Separate CE and PE instruments
+      const ceInstrument = filteredInstruments.find((item) =>
+        item.symbol.endsWith('CE')
+      );
+      const peInstrument = filteredInstruments.find((item) =>
+        item.symbol.endsWith('PE')
+      );
+
+      if (!ceInstrument && !peInstrument) {
+        return next(
+          new AppError(
+            `No CE or PE instruments found for name: ${name}, expiry: ${expiry}, strike: ${strike}`,
+            404
+          )
+        );
+      }
+
+      // Step 3: Get session and feed token for SmartAPI
+      const { feedToken, smartApi } = await generateSessionAndFeedToken();
+
+      const response = [];
+
+      // Helper function to fetch OI data
+      const fetchOIData = async (instrument, type) => {
+        console.log(`Fetching ${type} OI data for ${instrument.symbol}`);
+        const oiData = await smartApi.getOIData({
+          exchange: instrument.exch_seg,
+          symboltoken: instrument.token,
+          interval,
+          fromdate,
+          todate,
+        });
+
+        if (oiData && oiData.status && oiData.data.length) {
+          return oiData.data.map((entry) => ({
+            datetime: entry.time,
+            stockSymbol: instrument.symbol,
+            type,
+            openInterest: entry.oi,
+          }));
+        } else {
+          console.error(
+            `No OI data found for ${type} symbol: ${instrument.symbol}`
+          );
+          return [];
+        }
+      };
+
+      // Fetch OI data for CE and PE
+      if (ceInstrument) {
+        const ceOIData = await fetchOIData(ceInstrument, 'CE');
+        response.push(...ceOIData);
+      }
+
+      if (peInstrument) {
+        const peOIData = await fetchOIData(peInstrument, 'PE');
+        response.push(...peOIData);
+      }
+
+      // Step 4: Return the fetched data
+      res.status(200).json({
+        status: 'success',
+        message: 'OI data fetched successfully',
+        instruments: filteredInstruments,
+        oiData: response,
+      });
+    } catch (error) {
+      console.error('Error fetching OI data:', error);
+      next(new AppError('Failed to fetch OI data', 500));
+    }
+  }
+);
 
 // Controller to save historical options data for multiple intervals and symbols
 exports.getHistoricalDataForOption = expressAsyncHandler(
@@ -308,7 +434,7 @@ exports.getHistoricalDataForOption = expressAsyncHandler(
             )} to ${currentToDate.format('YYYY-MM-DD HH:mm')}`
           );
 
-          // Fetch historical data for the current chunk
+          // Fetch historical price data
           const histoData = await smartApi.getCandleData({
             exchange: instrument.exch_seg,
             symboltoken: instrument.token,
@@ -317,7 +443,7 @@ exports.getHistoricalDataForOption = expressAsyncHandler(
             todate: currentToDate.format('YYYY-MM-DD HH:mm'),
           });
 
-          // Fetch open interest (OI) data for the current chunk
+          // Fetch Open Interest (OI) data
           const oiData = await smartApi.getOIData({
             exchange: instrument.exch_seg,
             symboltoken: instrument.token,
@@ -326,12 +452,27 @@ exports.getHistoricalDataForOption = expressAsyncHandler(
             todate: currentToDate.format('YYYY-MM-DD HH:mm'),
           });
 
-          console.log('IO Data', oiData);
+          console.log(`OI Data for ${type}:`, oiData);
 
-          // Combine price data and OI data
           if (histoData && histoData.status && histoData.data.length) {
-            const candles = histoData.data.map((candle, index) => {
-              const oiValue = oiData?.data[index]?.openInterest || null; // Get OI if available
+            const candles = histoData.data.map((candle) => {
+              // Find the closest OI data timestamp to the candle timestamp
+              const candleTime = moment(candle[0]);
+              const closestOI = oiData?.data?.reduce((closest, oiEntry) => {
+                const oiTime = moment(oiEntry.time);
+                const closestTime = closest ? moment(closest.time) : null;
+
+                if (
+                  !closest ||
+                  Math.abs(candleTime.diff(oiTime)) <
+                    Math.abs(candleTime.diff(closestTime))
+                ) {
+                  return oiEntry;
+                }
+
+                return closest;
+              }, null);
+
               return {
                 datetime: candle[0],
                 expiry,
@@ -344,9 +485,10 @@ exports.getHistoricalDataForOption = expressAsyncHandler(
                 low: candle[3],
                 close: candle[4],
                 volume: candle[5],
-                openInterest: oiValue, // Add OI to the data
+                openInterest: closestOI ? closestOI.oi : null, // Assign OI if found
               };
             });
+
             instrumentData.push(...candles);
           } else {
             console.error(
