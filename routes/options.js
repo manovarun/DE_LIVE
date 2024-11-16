@@ -1,9 +1,14 @@
 const express = require('express');
-const { shortStraddleMeMd } = require('../controllers/OptionsController');
+const {
+  getOptionData1D,
+  getSymbolData,
+  getHistoricalDataForOption,
+} = require('../controllers/OptionsController');
 
 const router = express.Router();
 
-//Short Straddle Multiple Expiry Multiple Day
-router.route('/shortstraddlememd').get(shortStraddleMeMd);
+router.route('/getoption1d').post(getOptionData1D);
+router.route('/saveoptions').post(getHistoricalDataForOption);
+router.route('/getsymbol').post(getSymbolData);
 
 module.exports = router;

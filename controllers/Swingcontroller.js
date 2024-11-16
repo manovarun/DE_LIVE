@@ -149,7 +149,7 @@ exports.getLiveMarketData = expressAsyncHandler(async (req, res, next) => {
 
     const profileData = await smartApi.getProfile();
 
-    const nifty50Tokens = ['38732'];
+    const nifty50Tokens = ['26009'];
 
     const MarketData = await smartApi.marketData({
       mode: 'FULL',
@@ -216,7 +216,7 @@ exports.HistoSwing = expressAsyncHandler(async (req, res, next) => {
 
     // Step 5: Make a request to the Historical API for fetching the stock/index's historical data
     const histoData = await smartApi.getCandleData({
-      exchange: 'NSE',
+      exchange: 'NFO',
       symboltoken: stockToken, // Use the token from OpenAPIScripMaster
       interval, // Pass the interval dynamically
       fromdate, // Pass the fromdate dynamically
