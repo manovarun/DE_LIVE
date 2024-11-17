@@ -545,3 +545,452 @@ exports.getHistoricalDataForOption = expressAsyncHandler(
     }
   }
 );
+
+exports.getHistoricalDataForOptionsByStrikePrices = expressAsyncHandler(
+  async (req, res, next) => {
+    try {
+      const filePath = './OpenAPIScripMaster.json'; // Path to the OpenAPIScripMaster.json file
+
+      // Extract parameters from the request body
+      const { name, expiry, strikePrices, fromdate, todate, interval } =
+        req.body;
+
+      if (
+        !name ||
+        !expiry ||
+        !strikePrices ||
+        !fromdate ||
+        !todate ||
+        !interval
+      ) {
+        return next(
+          new AppError(
+            'Please provide valid name, expiry, strikePrices, fromdate, todate, and interval',
+            400
+          )
+        );
+      }
+
+      // Map verbose interval to abbreviated format
+      const abbreviatedInterval = INTERVAL_MAP[interval.toUpperCase()];
+      if (!abbreviatedInterval) {
+        return next(new AppError('Invalid interval provided', 400));
+      }
+
+      // Step 1: Load the OpenAPIScripMaster.json file
+      const data = fs.readFileSync(filePath, 'utf8');
+      const scripMaster = JSON.parse(data);
+
+      const maxDays = MAX_DAYS[interval];
+      if (!maxDays) {
+        return next(new AppError('Invalid interval provided', 400));
+      }
+
+      const fromDateMoment = moment(fromdate, 'YYYY-MM-DD HH:mm');
+      const toDateMoment = moment(todate, 'YYYY-MM-DD HH:mm');
+
+      if (!fromDateMoment.isValid() || !toDateMoment.isValid()) {
+        return next(new AppError('Invalid date format provided', 400));
+      }
+
+      const historicalData = [];
+
+      // Loop over each strike price
+      for (const strike of strikePrices) {
+        // Adjust the strike price to match the required format
+        const formattedStrike = (strike * 100).toFixed(6);
+
+        // Filter instruments for the given name, expiry, and strike price
+        const filteredInstruments = scripMaster.filter(
+          (item) =>
+            item.name === name &&
+            item.expiry === expiry &&
+            item.strike === formattedStrike
+        );
+
+        if (filteredInstruments.length === 0) {
+          console.warn(`No instruments found for strike: ${formattedStrike}`);
+          continue;
+        }
+
+        console.log(
+          `Found instruments for strike ${strike}:`,
+          filteredInstruments
+        );
+
+        // Separate CE and PE instruments
+        const ceInstrument = filteredInstruments.find((item) =>
+          item.symbol.endsWith('CE')
+        );
+        const peInstrument = filteredInstruments.find((item) =>
+          item.symbol.endsWith('PE')
+        );
+
+        if (!ceInstrument && !peInstrument) {
+          console.warn(
+            `No CE or PE instruments found for strike: ${formattedStrike}`
+          );
+          continue;
+        }
+
+        const { feedToken, smartApi } = await generateSessionAndFeedToken();
+
+        // Helper function to fetch data in chunks
+        const fetchChunkedData = async (instrument, type) => {
+          let currentFromDate = moment(fromDateMoment);
+          const instrumentData = [];
+
+          while (currentFromDate.isBefore(toDateMoment)) {
+            let currentToDate = moment(currentFromDate).add(maxDays, 'days');
+            if (currentToDate.isAfter(toDateMoment)) {
+              currentToDate = toDateMoment;
+            }
+
+            console.log(
+              `Fetching ${type} data for ${
+                instrument.symbol
+              } from ${currentFromDate.format(
+                'YYYY-MM-DD HH:mm'
+              )} to ${currentToDate.format('YYYY-MM-DD HH:mm')}`
+            );
+
+            // Fetch historical price data
+            const histoData = await smartApi.getCandleData({
+              exchange: instrument.exch_seg,
+              symboltoken: instrument.token,
+              interval,
+              fromdate: currentFromDate.format('YYYY-MM-DD HH:mm'),
+              todate: currentToDate.format('YYYY-MM-DD HH:mm'),
+            });
+
+            // Fetch Open Interest (OI) data
+            const oiData = await smartApi.getOIData({
+              exchange: instrument.exch_seg,
+              symboltoken: instrument.token,
+              interval,
+              fromdate: currentFromDate.format('YYYY-MM-DD HH:mm'),
+              todate: currentToDate.format('YYYY-MM-DD HH:mm'),
+            });
+
+            console.log(`OI Data for ${type} at strike ${strike}:`, oiData);
+
+            if (histoData && histoData.status && histoData.data.length) {
+              const candles = histoData.data.map((candle) => {
+                const candleTime = moment(candle[0]);
+                const closestOI = oiData?.data?.reduce((closest, oiEntry) => {
+                  const oiTime = moment(oiEntry.time);
+                  const closestTime = closest ? moment(closest.time) : null;
+
+                  if (
+                    !closest ||
+                    Math.abs(candleTime.diff(oiTime)) <
+                      Math.abs(candleTime.diff(closestTime))
+                  ) {
+                    return oiEntry;
+                  }
+
+                  return closest;
+                }, null);
+
+                const record = {
+                  datetime: candle[0],
+                  expiry,
+                  strike,
+                  optionType: type,
+                  timeInterval: abbreviatedInterval,
+                  stockSymbol: instrument.symbol,
+                  open: candle[1],
+                  high: candle[2],
+                  low: candle[3],
+                  close: candle[4],
+                  volume: candle[5],
+                  openInterest: closestOI ? closestOI.oi : null, // Assign OI if found
+                };
+
+                // Save to MongoDB
+                HistoricalOptionData.updateOne(
+                  {
+                    datetime: record.datetime,
+                    timeInterval: record.timeInterval,
+                    stockSymbol: record.stockSymbol,
+                    strikePrice: strike,
+                    optionType: type,
+                  },
+                  { $setOnInsert: record },
+                  { upsert: true }
+                ).catch((err) =>
+                  console.error(
+                    `Error saving record for ${type} symbol: ${instrument.symbol}`,
+                    err
+                  )
+                );
+
+                return record;
+              });
+
+              instrumentData.push(...candles);
+            } else {
+              console.warn(
+                `No price data fetched for ${type} at strike: ${strike}`
+              );
+            }
+
+            // Move to the next chunk
+            currentFromDate = currentToDate.add(1, 'minute');
+          }
+
+          return instrumentData;
+        };
+
+        // Fetch and save data for CE and PE in chunks
+        if (ceInstrument) {
+          await fetchChunkedData(ceInstrument, 'CE');
+        }
+
+        if (peInstrument) {
+          await fetchChunkedData(peInstrument, 'PE');
+        }
+      }
+
+      res.status(200).json({
+        status: 'success',
+        message:
+          'Historical data fetched and saved successfully for all strike prices',
+      });
+    } catch (error) {
+      console.error('Error fetching historical data for options:', error);
+      next(
+        new AppError(
+          'Failed to fetch and save historical data for options',
+          500
+        )
+      );
+    }
+  }
+);
+
+exports.getHistoricalDataForOptionsByExpiryAndStrikePrices =
+  expressAsyncHandler(async (req, res, next) => {
+    try {
+      const filePath = './OpenAPIScripMaster.json'; // Path to the OpenAPIScripMaster.json file
+
+      // Extract parameters from the request body
+      const { name, expiryDates, strikePrices, fromdate, todate, interval } =
+        req.body;
+
+      if (
+        !name ||
+        !expiryDates ||
+        !strikePrices ||
+        !fromdate ||
+        !todate ||
+        !interval
+      ) {
+        return next(
+          new AppError(
+            'Please provide valid name, expiryDates, strikePrices, fromdate, todate, and interval',
+            400
+          )
+        );
+      }
+
+      const abbreviatedInterval = INTERVAL_MAP[interval.toUpperCase()];
+      if (!abbreviatedInterval) {
+        return next(new AppError('Invalid interval provided', 400));
+      }
+
+      const maxDays = MAX_DAYS[interval];
+      if (!maxDays) {
+        return next(new AppError('Invalid interval provided', 400));
+      }
+
+      const fromDateMoment = moment(fromdate, 'YYYY-MM-DD HH:mm');
+      const toDateMoment = moment(todate, 'YYYY-MM-DD HH:mm');
+
+      if (!fromDateMoment.isValid() || !toDateMoment.isValid()) {
+        return next(new AppError('Invalid date format provided', 400));
+      }
+
+      const data = fs.readFileSync(filePath, 'utf8');
+      const scripMaster = JSON.parse(data);
+
+      const { feedToken, smartApi } = await generateSessionAndFeedToken();
+
+      const fetchChunkedData = async (instrument, type, strike) => {
+        let currentFromDate = moment(fromDateMoment);
+        const instrumentData = [];
+
+        while (currentFromDate.isBefore(toDateMoment)) {
+          let currentToDate = moment(currentFromDate).add(maxDays, 'days');
+          if (currentToDate.isAfter(toDateMoment)) {
+            currentToDate = toDateMoment;
+          }
+
+          console.log(
+            `Fetching ${type} data for ${
+              instrument.symbol
+            } from ${currentFromDate.format(
+              'YYYY-MM-DD HH:mm'
+            )} to ${currentToDate.format('YYYY-MM-DD HH:mm')}`
+          );
+
+          const histoData = await smartApi
+            .getCandleData({
+              exchange: instrument.exch_seg,
+              symboltoken: instrument.token,
+              interval,
+              fromdate: currentFromDate.format('YYYY-MM-DD HH:mm'),
+              todate: currentToDate.format('YYYY-MM-DD HH:mm'),
+            })
+            .catch((err) => {
+              console.error(
+                `Error fetching price data for ${type} at strike: ${strike}`,
+                err
+              );
+              return null;
+            });
+
+          if (!histoData || !histoData.status || !histoData.data?.length) {
+            console.warn(
+              `No price data fetched for ${type} at expiry: ${instrument.expiry} and strike: ${strike}`
+            );
+            break;
+          }
+
+          const oiData = await smartApi
+            .getOIData({
+              exchange: instrument.exch_seg,
+              symboltoken: instrument.token,
+              interval,
+              fromdate: currentFromDate.format('YYYY-MM-DD HH:mm'),
+              todate: currentToDate.format('YYYY-MM-DD HH:mm'),
+            })
+            .catch((err) => {
+              console.error(
+                `Error fetching OI data for ${type} at strike: ${strike}`,
+                err
+              );
+              return { data: [] };
+            });
+
+          console.log(`OI Data for ${type} at strike ${strike}:`, oiData);
+
+          const candles = histoData.data.map((candle) => {
+            const candleTime = moment(candle[0]);
+            const closestOI = oiData?.data?.reduce((closest, oiEntry) => {
+              const oiTime = moment(oiEntry.time);
+              const closestTime = closest ? moment(closest.time) : null;
+
+              if (
+                !closest ||
+                Math.abs(candleTime.diff(oiTime)) <
+                  Math.abs(candleTime.diff(closestTime))
+              ) {
+                return oiEntry;
+              }
+
+              return closest;
+            }, null);
+
+            const record = {
+              datetime: candle[0],
+              expiry: instrument.expiry,
+              strike: parseFloat(instrument.strike) / 100,
+              optionType: type,
+              timeInterval: abbreviatedInterval,
+              stockName: instrument.name,
+              stockSymbol: instrument.symbol,
+              open: candle[1],
+              high: candle[2],
+              low: candle[3],
+              close: candle[4],
+              volume: candle[5],
+              openInterest: closestOI ? closestOI.oi : null,
+            };
+
+            HistoricalOptionData.updateOne(
+              {
+                datetime: record.datetime,
+                timeInterval: record.timeInterval,
+                stockSymbol: record.stockSymbol,
+                strikePrice: record.strike,
+                optionType: record.optionType,
+              },
+              { $setOnInsert: record },
+              { upsert: true }
+            ).catch((err) =>
+              console.error(
+                `Error saving record for ${type} symbol: ${instrument.symbol}`,
+                err
+              )
+            );
+
+            return record;
+          });
+
+          instrumentData.push(...candles);
+
+          currentFromDate = currentToDate.add(1, 'minute');
+        }
+
+        return instrumentData;
+      };
+
+      for (const expiry of expiryDates) {
+        for (const strike of strikePrices) {
+          const formattedStrike = (strike * 100).toFixed(6);
+
+          const filteredInstruments = scripMaster.filter(
+            (item) =>
+              item.name === name &&
+              item.expiry === expiry &&
+              item.strike === formattedStrike
+          );
+
+          if (filteredInstruments.length === 0) {
+            console.warn(
+              `No instruments found for expiry: ${expiry} and strike: ${formattedStrike}`
+            );
+            continue;
+          }
+
+          console.log(
+            `Found instruments for expiry ${expiry} and strike ${strike}:`,
+            filteredInstruments
+          );
+
+          const ceInstrument = filteredInstruments.find((item) =>
+            item.symbol.endsWith('CE')
+          );
+          const peInstrument = filteredInstruments.find((item) =>
+            item.symbol.endsWith('PE')
+          );
+
+          if (ceInstrument) {
+            await fetchChunkedData(ceInstrument, 'CE', strike);
+          }
+
+          if (peInstrument) {
+            await fetchChunkedData(peInstrument, 'PE', strike);
+          }
+        }
+      }
+
+      res.status(200).json({
+        status: 'success',
+        message:
+          'Historical data fetched and saved successfully for all expiry dates and strike prices',
+      });
+    } catch (error) {
+      console.error(
+        'Error fetching historical data for options by expiries and strike prices:',
+        error
+      );
+      next(
+        new AppError(
+          'Failed to fetch and save historical data for options',
+          500
+        )
+      );
+    }
+  });

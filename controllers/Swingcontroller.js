@@ -216,7 +216,7 @@ exports.HistoSwing = expressAsyncHandler(async (req, res, next) => {
 
     // Step 5: Make a request to the Historical API for fetching the stock/index's historical data
     const histoData = await smartApi.getCandleData({
-      exchange: 'NFO',
+      exchange: 'NSE',
       symboltoken: stockToken, // Use the token from OpenAPIScripMaster
       interval, // Pass the interval dynamically
       fromdate, // Pass the fromdate dynamically

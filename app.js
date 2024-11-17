@@ -15,6 +15,7 @@ const socketRouter = require('./routes/socket');
 const optionsRouter = require('./routes/options');
 const futureRouter = require('./routes/future');
 const backtestRouter = require('./routes/backtest');
+const indiaVixRouter = require('./routes/indiavix');
 
 const app = express();
 
@@ -34,6 +35,7 @@ app.use('/api/socket', socketRouter);
 app.use('/api/options', optionsRouter);
 app.use('/api/future', futureRouter);
 app.use('/api/backtest', backtestRouter);
+app.use('/api/indiavix', indiaVixRouter);
 
 app.use(GlobalErrorHandler);
 

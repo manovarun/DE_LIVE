@@ -11,6 +11,10 @@ const HistoricalOptionDataSchema = new mongoose.Schema({
     required: true,
     enum: ['M1', 'M3', 'M5', 'M10', 'M15', 'M30', 'H1', 'D1'],
   },
+  stockName: {
+    type: String,
+    required: true,
+  },
   stockSymbol: {
     type: String,
     required: true,
