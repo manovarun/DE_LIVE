@@ -19,7 +19,7 @@ const HistoricalOptionDataSchema = new mongoose.Schema({
     type: Number,
     required: true,
   },
-  expiryDate: {
+  expiry: {
     type: String,
     required: true,
   },

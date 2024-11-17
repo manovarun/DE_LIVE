@@ -339,7 +339,6 @@ exports.getSymbolDataAndFetchOI = expressAsyncHandler(
   }
 );
 
-// Controller to save historical options data for multiple intervals and symbols
 exports.getHistoricalDataForOption = expressAsyncHandler(
   async (req, res, next) => {
     try {
@@ -356,6 +355,12 @@ exports.getHistoricalDataForOption = expressAsyncHandler(
             400
           )
         );
+      }
+
+      // Map verbose interval to abbreviated format
+      const abbreviatedInterval = INTERVAL_MAP[interval.toUpperCase()];
+      if (!abbreviatedInterval) {
+        return next(new AppError('Invalid interval provided', 400));
       }
 
       // Step 1: Load the OpenAPIScripMaster.json file
@@ -400,8 +405,6 @@ exports.getHistoricalDataForOption = expressAsyncHandler(
 
       // Step 4: Get session and feed token for SmartAPI
       const { feedToken, smartApi } = await generateSessionAndFeedToken();
-
-      const historicalData = [];
 
       const maxDays = MAX_DAYS[interval];
       if (!maxDays) {
@@ -473,12 +476,12 @@ exports.getHistoricalDataForOption = expressAsyncHandler(
                 return closest;
               }, null);
 
-              return {
+              const record = {
                 datetime: candle[0],
                 expiry,
                 strike,
-                type,
-                interval,
+                optionType: type,
+                timeInterval: abbreviatedInterval, // Store abbreviated interval
                 stockSymbol: instrument.symbol,
                 open: candle[1],
                 high: candle[2],
@@ -487,6 +490,26 @@ exports.getHistoricalDataForOption = expressAsyncHandler(
                 volume: candle[5],
                 openInterest: closestOI ? closestOI.oi : null, // Assign OI if found
               };
+
+              // Save the record to MongoDB
+              HistoricalOptionData.updateOne(
+                {
+                  datetime: record.datetime,
+                  timeInterval: record.timeInterval,
+                  stockSymbol: record.stockSymbol,
+                  strikePrice: strike,
+                  optionType: type,
+                },
+                { $setOnInsert: record },
+                { upsert: true }
+              ).catch((err) =>
+                console.error(
+                  `Error saving record for ${type} symbol: ${instrument.symbol}`,
+                  err
+                )
+              );
+
+              return record;
             });
 
             instrumentData.push(...candles);
@@ -503,28 +526,22 @@ exports.getHistoricalDataForOption = expressAsyncHandler(
         return instrumentData;
       };
 
-      // Fetch data for CE and PE in chunks
+      // Fetch and save data for CE and PE in chunks
       if (ceInstrument) {
-        const ceData = await fetchChunkedData(ceInstrument, 'CE');
-        historicalData.push(...ceData);
+        await fetchChunkedData(ceInstrument, 'CE');
       }
 
       if (peInstrument) {
-        const peData = await fetchChunkedData(peInstrument, 'PE');
-        historicalData.push(...peData);
+        await fetchChunkedData(peInstrument, 'PE');
       }
 
-      // Step 7: Return aggregated historical data for both CE and PE
       res.status(200).json({
         status: 'success',
-        message: 'Historical data fetched successfully',
-        ceInstrument,
-        peInstrument,
-        historicalData,
+        message: 'Historical data fetched and saved successfully',
       });
     } catch (error) {
       console.error('Error fetching historical data:', error);
-      next(new AppError('Failed to fetch historical data', 500));
+      next(new AppError('Failed to fetch and save historical data', 500));
     }
   }
 );

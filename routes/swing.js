@@ -13,7 +13,7 @@ const {
 
 const router = express.Router();
 
-router.route('/swingtrade').get(HistoSwing);
+router.route('/swingtrade').post(HistoSwing);
 router.route('/getNifty50Tokens').get(getNifty50Tokens);
 router.route('/swingsave').post(saveHistoSwingData);
 router.route('/swingmultisave').post(saveHistoSwingMultipleData);

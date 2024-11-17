@@ -223,6 +223,8 @@ exports.HistoSwing = expressAsyncHandler(async (req, res, next) => {
       todate, // Pass the todate dynamically
     });
 
+    console.log(histoData);
+
     // Step 6: Ensure the data is valid
     if (!histoData || !histoData.status) {
       return next(
