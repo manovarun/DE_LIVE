@@ -10,12 +10,9 @@ const connectDB = require('./db');
 connectDB();
 
 const indexRouter = require('./routes/index');
-const swingRouter = require('./routes/swing');
-const socketRouter = require('./routes/socket');
 const optionsRouter = require('./routes/options');
-const futureRouter = require('./routes/future');
-const backtestRouter = require('./routes/backtest');
 const indiaVixRouter = require('./routes/indiavix');
+const indicesRouter = require('./routes/indices');
 
 const app = express();
 
@@ -30,12 +27,9 @@ app.use(cookieParser());
 app.use(express.static(path.join(__dirname, 'public')));
 
 app.use('/', indexRouter);
-app.use('/api/swing', swingRouter);
-app.use('/api/socket', socketRouter);
 app.use('/api/options', optionsRouter);
-app.use('/api/future', futureRouter);
-app.use('/api/backtest', backtestRouter);
 app.use('/api/indiavix', indiaVixRouter);
+app.use('/api/indices', indicesRouter);
 
 app.use(GlobalErrorHandler);
 
