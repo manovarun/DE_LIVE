@@ -6,6 +6,7 @@ const {
   getSymbolDataAndFetchOI,
   getHistoricalDataForOptionsByStrikePrices,
   getHistoricalDataForOptionsByExpiryAndStrikePrices,
+  getHistoricalDataForOptionsByExpiryAndStrikePricesIntervals,
 } = require('../controllers/OptionsController');
 
 const router = express.Router();
@@ -18,6 +19,9 @@ router
 router
   .route('/op-multi-strike-expiry')
   .post(getHistoricalDataForOptionsByExpiryAndStrikePrices);
+router
+  .route('/op-multi-strike-expiry-interval')
+  .post(getHistoricalDataForOptionsByExpiryAndStrikePricesIntervals);
 router.route('/getsymbol').post(getSymbolData);
 router.route('/getoidata').post(getSymbolDataAndFetchOI);
 
