@@ -7,6 +7,7 @@
     "server": "nodemon ./bin/www"
   },
   "dependencies": {
+    "async": "^3.2.6",
     "axios": "^1.7.7",
     "colors": "^1.4.0",
     "cookie-parser": "~1.4.4",
@@ -21,6 +22,7 @@
     "mongoose": "^8.7.1",
     "morgan": "~1.9.1",
     "otplib": "^12.0.1",
+    "p-limit": "^6.1.0",
     "smartapi-javascript": "^1.0.27",
     "ta-lib": "^0.11.0",
     "technicalindicators": "^3.1.0",
