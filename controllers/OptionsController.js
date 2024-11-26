@@ -1706,3 +1706,276 @@ exports.getHistoricalDataForOptionsByExpiryAndStrikePricesIntervals =
       );
     }
   });
+
+exports.getHistoricalDataForOptionsByExpiryAndStrikePricesIntervalsIndices =
+  expressAsyncHandler(async (req, res, next) => {
+    try {
+      const filePath = './OpenAPIScripMaster.json'; // Path to the OpenAPIScripMaster.json file
+
+      // Extract parameters from the request body
+      const { requests } = req.body;
+
+      if (!Array.isArray(requests) || requests.length === 0) {
+        return next(
+          new AppError(
+            'Please provide an array of requests with name, expiryDates, strikePrices, intervals, fromdate, and todate for each instrument',
+            400
+          )
+        );
+      }
+
+      const data = fs.readFileSync(filePath, 'utf8');
+      const scripMaster = JSON.parse(data);
+
+      const { feedToken, smartApi } = await generateSessionAndFeedToken();
+
+      // Map of intervals to their maximum allowed days
+      const MAX_DAYS = {
+        ONE_MINUTE: 30,
+        THREE_MINUTE: 60,
+        FIVE_MINUTE: 100,
+        TEN_MINUTE: 100,
+        FIFTEEN_MINUTE: 200,
+        THIRTY_MINUTE: 200,
+        ONE_HOUR: 400,
+        ONE_DAY: 2000,
+      };
+
+      // Map of intervals to their database-stored forms
+      const INTERVAL_MAP = {
+        ONE_MINUTE: 'M1',
+        THREE_MINUTE: 'M3',
+        FIVE_MINUTE: 'M5',
+        TEN_MINUTE: 'M10',
+        FIFTEEN_MINUTE: 'M15',
+        THIRTY_MINUTE: 'M30',
+        ONE_HOUR: 'H1',
+        ONE_DAY: 'D1',
+      };
+
+      // Function to fetch and save data for a given instrument
+      const fetchChunkedData = async (
+        instrument,
+        type,
+        strike,
+        interval,
+        maxDays,
+        fromDateMoment,
+        toDateMoment
+      ) => {
+        let currentFromDate = moment(fromDateMoment);
+        const bulkOperations = [];
+
+        while (currentFromDate.isBefore(toDateMoment)) {
+          let currentToDate = moment(currentFromDate).add(maxDays, 'days');
+          if (currentToDate.isAfter(toDateMoment)) {
+            currentToDate = toDateMoment;
+          }
+
+          console.log(
+            `Fetching ${type} data for ${
+              instrument.symbol
+            } (${interval}) from ${currentFromDate.format(
+              'YYYY-MM-DD HH:mm'
+            )} to ${currentToDate.format('YYYY-MM-DD HH:mm')}`
+          );
+
+          try {
+            const histoData = await smartApi.getCandleData({
+              exchange: instrument.exch_seg,
+              symboltoken: instrument.token,
+              interval,
+              fromdate: currentFromDate.format('YYYY-MM-DD HH:mm'),
+              todate: currentToDate.format('YYYY-MM-DD HH:mm'),
+            });
+
+            if (!histoData || !histoData.data?.length) {
+              console.warn(
+                `No price data fetched for ${type} at expiry: ${instrument.expiry} and strike: ${strike}`
+              );
+              break;
+            }
+
+            const oiData = await smartApi
+              .getOIData({
+                exchange: instrument.exch_seg,
+                symboltoken: instrument.token,
+                interval,
+                fromdate: currentFromDate.format('YYYY-MM-DD HH:mm'),
+                todate: currentToDate.format('YYYY-MM-DD HH:mm'),
+              })
+              .catch(() => ({ data: [] }));
+
+            const candles = histoData.data.map((candle) => {
+              const candleTime = moment(candle[0]);
+              const closestOI = oiData?.data?.reduce((closest, oiEntry) => {
+                const oiTime = moment(oiEntry.time);
+                const closestTime = closest ? moment(closest.time) : null;
+
+                if (
+                  !closest ||
+                  Math.abs(candleTime.diff(oiTime)) <
+                    Math.abs(candleTime.diff(closestTime))
+                ) {
+                  return oiEntry;
+                }
+                return closest;
+              }, null);
+
+              // Use the abbreviated interval only for storing in the database
+              const abbreviatedInterval = INTERVAL_MAP[interval.toUpperCase()];
+
+              return {
+                updateOne: {
+                  filter: {
+                    datetime: candle[0],
+                    timeInterval: abbreviatedInterval,
+                    stockSymbol: instrument.symbol,
+                    strikePrice: parseFloat(instrument.strike) / 100,
+                    optionType: type,
+                  },
+                  update: {
+                    $setOnInsert: {
+                      datetime: candle[0],
+                      expiry: instrument.expiry,
+                      strikePrice: parseFloat(instrument.strike) / 100,
+                      optionType: type,
+                      timeInterval: abbreviatedInterval,
+                      stockName: instrument.name,
+                      stockSymbol: instrument.symbol,
+                      open: candle[1],
+                      high: candle[2],
+                      low: candle[3],
+                      close: candle[4],
+                      volume: candle[5],
+                      openInterest: closestOI ? closestOI.oi : null,
+                    },
+                  },
+                  upsert: true,
+                },
+              };
+            });
+
+            bulkOperations.push(...candles);
+          } catch (error) {
+            console.error(
+              `Error fetching data for ${type} at strike: ${strike} (${interval})`,
+              error
+            );
+          }
+
+          currentFromDate = currentToDate.clone().add(1, 'minute');
+        }
+
+        // Perform bulkWrite to save all fetched data
+        if (bulkOperations.length > 0) {
+          await HistoricalOptionData.bulkWrite(bulkOperations).catch((err) =>
+            console.error(
+              `Error saving records for ${type} symbol: ${instrument.symbol} (${interval})`,
+              err
+            )
+          );
+        }
+      };
+
+      // Process each request in parallel
+      await Promise.all(
+        requests.map(async (request) => {
+          const {
+            name,
+            expiryDates,
+            strikePrices,
+            intervals,
+            fromdate,
+            todate,
+          } = request;
+
+          const fromDateMoment = moment(fromdate, 'YYYY-MM-DD HH:mm', true);
+          const toDateMoment = moment(todate, 'YYYY-MM-DD HH:mm', true);
+
+          for (const expiry of expiryDates) {
+            for (const strike of strikePrices) {
+              for (const interval of intervals) {
+                const maxDays = MAX_DAYS[interval.toUpperCase()];
+                if (!maxDays) {
+                  console.warn(
+                    `Invalid interval ${interval} provided, skipping...`
+                  );
+                  continue;
+                }
+
+                const formattedStrike = (strike * 100).toFixed(6);
+
+                const filteredInstruments = scripMaster.filter(
+                  (item) =>
+                    item.name === name &&
+                    item.expiry === expiry &&
+                    item.strike === formattedStrike
+                );
+
+                if (filteredInstruments.length === 0) {
+                  console.warn(
+                    `No instruments found for expiry: ${expiry}, strike: ${strike}, and interval: ${interval}`
+                  );
+                  continue;
+                }
+
+                console.log(
+                  `Found instruments for expiry ${expiry}, strike ${strike}, and interval ${interval}:`,
+                  filteredInstruments
+                );
+
+                const ceInstrument = filteredInstruments.find((item) =>
+                  item.symbol.endsWith('CE')
+                );
+                const peInstrument = filteredInstruments.find((item) =>
+                  item.symbol.endsWith('PE')
+                );
+
+                if (ceInstrument) {
+                  await fetchChunkedData(
+                    ceInstrument,
+                    'CE',
+                    strike,
+                    interval,
+                    maxDays,
+                    fromDateMoment,
+                    toDateMoment
+                  );
+                }
+
+                if (peInstrument) {
+                  await fetchChunkedData(
+                    peInstrument,
+                    'PE',
+                    strike,
+                    interval,
+                    maxDays,
+                    fromDateMoment,
+                    toDateMoment
+                  );
+                }
+              }
+            }
+          }
+        })
+      );
+
+      res.status(200).json({
+        status: 'success',
+        message:
+          'Historical data fetched and saved successfully for all instruments, expiry dates, strike prices, and intervals',
+      });
+    } catch (error) {
+      console.error(
+        'Error fetching historical data for options by expiry dates, strike prices, and intervals:',
+        error
+      );
+      next(
+        new AppError(
+          'Failed to fetch and save historical data for options',
+          500
+        )
+      );
+    }
+  });
