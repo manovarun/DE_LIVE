@@ -911,17 +911,25 @@ exports.createShortStraddleMultiDay = expressAsyncHandler(
           for (const candle of ceExitData) {
             if (candle.high >= ceStopLoss) {
               ceExitPrice = ceStopLoss;
+              ceExitTime = moment(candle.datetime).format(
+                'YYYY-MM-DD HH:mm:ss'
+              ); // Capture the stop-loss hit time
               break;
             }
             ceExitPrice = candle.close;
+            ceExitTime = exitTimeIST.format('YYYY-MM-DD HH:mm:ss'); // Default to predefined exit time
           }
 
           for (const candle of peExitData) {
             if (candle.high >= peStopLoss) {
               peExitPrice = peStopLoss;
+              peExitTime = moment(candle.datetime).format(
+                'YYYY-MM-DD HH:mm:ss'
+              ); // Capture the stop-loss hit time
               break;
             }
             peExitPrice = candle.close;
+            peExitTime = exitTimeIST.format('YYYY-MM-DD HH:mm:ss'); // Default to predefined exit time
           }
 
           const vixData = await HistoricalIndicesData.findOne({
@@ -940,7 +948,7 @@ exports.createShortStraddleMultiDay = expressAsyncHandler(
             {
               date,
               entryTime: entryTimeIST.format('YYYY-MM-DD HH:mm:ss'),
-              exitTime: exitTimeIST.format('YYYY-MM-DD HH:mm:ss'),
+              exitTime: ceExitTime,
               type: 'CE',
               strikePrice: nearestStrikePrice,
               qty: lotSize,
@@ -953,7 +961,7 @@ exports.createShortStraddleMultiDay = expressAsyncHandler(
             {
               date,
               entryTime: entryTimeIST.format('YYYY-MM-DD HH:mm:ss'),
-              exitTime: exitTimeIST.format('YYYY-MM-DD HH:mm:ss'),
+              exitTime: peExitTime,
               type: 'PE',
               strikePrice: nearestStrikePrice,
               qty: lotSize,
