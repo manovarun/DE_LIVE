@@ -797,17 +797,20 @@ exports.createShortStraddleMultiDay = expressAsyncHandler(
         exitTime,
       } = req.body;
 
+      // Validate input
       if (
         !timeInterval ||
         !fromDate ||
         !toDate ||
         !expiry ||
         !lotSize ||
-        !stopLossPercentage
+        !stopLossPercentage ||
+        !entryTime ||
+        !exitTime
       ) {
         return next(
           new AppError(
-            'Please provide valid timeInterval, fromDate, toDate, expiry, lotSize, and stopLossPercentage.',
+            'Please provide valid timeInterval, fromDate, toDate, expiry, lotSize, stopLossPercentage, entryTime, and exitTime.',
             400
           )
         );
@@ -845,6 +848,8 @@ exports.createShortStraddleMultiDay = expressAsyncHandler(
 
         const entryTimeStr = entryTimeIST.format('YYYY-MM-DDTHH:mm:ssZ');
         const exitTimeStr = exitTimeIST.format('YYYY-MM-DDTHH:mm:ssZ');
+
+        let ceExitTime, peExitTime; // Initialize variables for exit times
 
         try {
           const bankNiftySpot = await HistoricalIndicesData.findOne({
