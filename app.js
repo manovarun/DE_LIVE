@@ -13,6 +13,7 @@ const indexRouter = require('./routes/index');
 const optionsRouter = require('./routes/options');
 const indiaVixRouter = require('./routes/indiavix');
 const indicesRouter = require('./routes/indices');
+const straddleRouter = require('./routes/straddle');
 
 const app = express();
 
@@ -30,6 +31,7 @@ app.use('/', indexRouter);
 app.use('/api/options', optionsRouter);
 app.use('/api/indiavix', indiaVixRouter);
 app.use('/api/indices', indicesRouter);
+app.use('/api/straddle', straddleRouter);
 
 app.use(GlobalErrorHandler);
 
