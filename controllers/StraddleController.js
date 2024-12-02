@@ -793,6 +793,8 @@ exports.createShortStraddleMultiDay = expressAsyncHandler(
         expiry,
         lotSize,
         stopLossPercentage,
+        entryTime,
+        exitTime,
       } = req.body;
 
       if (
@@ -829,13 +831,14 @@ exports.createShortStraddleMultiDay = expressAsyncHandler(
         const date = currentDate.format('YYYY-MM-DD');
         console.log(`Processing date: ${date}`);
 
+        // Define entry and exit times for the current date in IST
         const entryTimeIST = moment.tz(
-          `${date} 09:20`,
+          `${date} ${entryTime}`,
           'YYYY-MM-DD HH:mm',
           'Asia/Kolkata'
         );
         const exitTimeIST = moment.tz(
-          `${date} 15:10`,
+          `${date} ${exitTime}`,
           'YYYY-MM-DD HH:mm',
           'Asia/Kolkata'
         );
@@ -913,11 +916,11 @@ exports.createShortStraddleMultiDay = expressAsyncHandler(
               ceExitPrice = ceStopLoss;
               ceExitTime = moment(candle.datetime).format(
                 'YYYY-MM-DD HH:mm:ss'
-              ); // Capture the stop-loss hit time
+              );
               break;
             }
             ceExitPrice = candle.close;
-            ceExitTime = exitTimeIST.format('YYYY-MM-DD HH:mm:ss'); // Default to predefined exit time
+            ceExitTime = exitTimeIST.format('YYYY-MM-DD HH:mm:ss');
           }
 
           for (const candle of peExitData) {
@@ -925,11 +928,11 @@ exports.createShortStraddleMultiDay = expressAsyncHandler(
               peExitPrice = peStopLoss;
               peExitTime = moment(candle.datetime).format(
                 'YYYY-MM-DD HH:mm:ss'
-              ); // Capture the stop-loss hit time
+              );
               break;
             }
             peExitPrice = candle.close;
-            peExitTime = exitTimeIST.format('YYYY-MM-DD HH:mm:ss'); // Default to predefined exit time
+            peExitTime = exitTimeIST.format('YYYY-MM-DD HH:mm:ss');
           }
 
           const vixData = await HistoricalIndicesData.findOne({
@@ -990,7 +993,6 @@ exports.createShortStraddleMultiDay = expressAsyncHandler(
         }
       }
 
-      // Sort results by date descending and calculate cumulative profit
       results.sort((a, b) => new Date(b.date) - new Date(a.date));
 
       let cumulativeProfit = 0;
