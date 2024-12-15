@@ -2,11 +2,21 @@ const express = require('express');
 const {
   createShortStraddleSingleDay,
   createShortStraddleMultiDay,
+  createAndSaveShortStraddleMultiDay,
+  gridSearchShortStraddle,
+  gridSearchShortStraddleProfitOnly,
 } = require('../controllers/StraddleController');
 
 const router = express.Router();
 
 router.route('/straddle-single-day').post(createShortStraddleSingleDay);
 router.route('/straddle-multi-day').post(createShortStraddleMultiDay);
+router
+  .route('/straddle-multi-day-save')
+  .post(createAndSaveShortStraddleMultiDay);
+router.route('/straddle-multi-grid').post(gridSearchShortStraddle);
+router
+  .route('/straddle-multi-grid-profit')
+  .post(gridSearchShortStraddleProfitOnly);
 
 module.exports = router;
