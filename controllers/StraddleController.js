@@ -952,7 +952,6 @@ exports.gridSearchAndSaveShortStraddle = expressAsyncHandler(
 
       res.status(200).json({
         status: 'success',
-        data: allResults,
       });
     } catch (error) {
       console.error(
