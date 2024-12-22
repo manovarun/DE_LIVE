@@ -34,6 +34,7 @@ const shortStraddleStrategySchema = new mongoose.Schema({
   timeInterval: { type: String, required: true },
   fromDate: { type: String, required: true },
   toDate: { type: String, required: true },
+  stockSymbol: { type: String, required: true },
   expiry: { type: String, required: true },
   lotSize: { type: Number, required: true },
   stopLossPercentage: { type: Number, required: true },

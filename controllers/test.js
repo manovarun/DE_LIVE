@@ -10,6 +10,7 @@ exports.gridSearchAndSaveShortStraddle = expressAsyncHandler(
         stopLossPercentage,
         entryTimes,
         exitTimes,
+        stockSymbol, // Added stockSymbol dynamically
       } = req.body;
 
       if (
@@ -22,11 +23,12 @@ exports.gridSearchAndSaveShortStraddle = expressAsyncHandler(
         !Array.isArray(entryTimes) ||
         !Array.isArray(exitTimes) ||
         entryTimes.length === 0 ||
-        exitTimes.length === 0
+        exitTimes.length === 0 ||
+        !stockSymbol // Validate stockSymbol
       ) {
         return next(
           new AppError(
-            'Please provide valid timeInterval, fromDate, toDate, expiry, lotSize, stopLossPercentage, and non-empty entryTimes and exitTimes arrays.',
+            'Please provide valid timeInterval, fromDate, toDate, expiry, lotSize, stopLossPercentage, stockSymbol, and non-empty entryTimes and exitTimes arrays.',
             400
           )
         );
@@ -52,7 +54,7 @@ exports.gridSearchAndSaveShortStraddle = expressAsyncHandler(
             continue;
           }
 
-          const strategyId = `${fromDate}-${toDate}-${expiry}-${timeInterval}-${entryTime}-${exitTime}`;
+          const strategyId = `${stockSymbol}-${fromDate}-${toDate}-${expiry}-${timeInterval}-${entryTime}-${exitTime}`;
           let results = [];
           let overallCumulativeProfit = 0;
 
@@ -82,20 +84,20 @@ exports.gridSearchAndSaveShortStraddle = expressAsyncHandler(
             let ceExitTime, peExitTime;
 
             try {
-              const bankNiftySpot = await HistoricalIndicesData.findOne({
+              const spotData = await HistoricalIndicesData.findOne({
                 timeInterval,
                 datetime: entryTimeStr,
-                stockSymbol: 'Nifty Bank',
+                stockSymbol, // Use the dynamic stockSymbol
               });
 
-              if (!bankNiftySpot) {
+              if (!spotData) {
                 console.warn(
-                  `BankNIFTY spot data not found for ${date}. Skipping.`
+                  `${stockSymbol} spot data not found for ${date}. Skipping.`
                 );
                 continue;
               }
 
-              const spotPrice = bankNiftySpot.open;
+              const spotPrice = spotData.open;
               const nearestStrikePrice = Math.round(spotPrice / 100) * 100;
 
               const entryOptions = await HistoricalOptionData.find({
@@ -251,6 +253,7 @@ exports.gridSearchAndSaveShortStraddle = expressAsyncHandler(
             expiry,
             lotSize,
             stopLossPercentage,
+            stockSymbol,
             entryTime,
             exitTime,
             cumulativeProfit: overallCumulativeProfit,
@@ -270,7 +273,6 @@ exports.gridSearchAndSaveShortStraddle = expressAsyncHandler(
 
       res.status(200).json({
         status: 'success',
-        data: allResults,
       });
     } catch (error) {
       console.error(
