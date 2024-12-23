@@ -784,7 +784,11 @@ exports.gridSearchAndSaveShortStraddle = expressAsyncHandler(
               }
 
               const spotPrice = spotData.open;
-              const nearestStrikePrice = Math.round(spotPrice / 100) * 100;
+
+              const strikePriceInterval = stockSymbol === 'Nifty 50' ? 50 : 100;
+              const nearestStrikePrice =
+                Math.round(spotPrice / strikePriceInterval) *
+                strikePriceInterval;
 
               const entryOptions = await HistoricalOptionData.find({
                 timeInterval,
