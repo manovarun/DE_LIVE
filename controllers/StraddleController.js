@@ -1495,7 +1495,8 @@ exports.createOTMShortStraddleMultiDay = expressAsyncHandler(
 
       let results = [];
       let overallCumulativeProfit = 0;
-      let profitableDaysCount = 0; // To track the number of profitable days
+      let profitableDaysCount = 0; // Count of profitable days
+      let totalTradeDays = 0; // Count of total trade days
 
       for (
         let currentDate = fromDateMoment.clone();
@@ -1632,6 +1633,7 @@ exports.createOTMShortStraddleMultiDay = expressAsyncHandler(
           if (totalProfitLoss > 0) {
             profitableDaysCount++;
           }
+          totalTradeDays++; // Increment for every processed day
 
           const transactionLog = [
             {
@@ -1663,6 +1665,7 @@ exports.createOTMShortStraddleMultiDay = expressAsyncHandler(
           ];
 
           results.push({
+            cumulativeProfit: overallCumulativeProfit,
             date,
             spotPrice,
             strikePrice: { CE: otmCEPrice, PE: otmPEPrice },
@@ -1672,7 +1675,6 @@ exports.createOTMShortStraddleMultiDay = expressAsyncHandler(
             entryPrice: ceEntryPrice + peEntryPrice,
             exitPrice: ceExitPrice + peExitPrice,
             profitLoss: totalProfitLoss,
-            cumulativeProfit: overallCumulativeProfit,
             transactions: transactionLog,
           });
         } catch (error) {
@@ -1682,6 +1684,7 @@ exports.createOTMShortStraddleMultiDay = expressAsyncHandler(
 
       res.status(200).json({
         status: 'success',
+        totalTradeDays, // Include total trade days
         noOfProfitableDays: profitableDaysCount, // Include number of profitable days
         data: results.reverse(),
       });
