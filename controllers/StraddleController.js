@@ -1698,8 +1698,7 @@ exports.createOTMShortStraddleMultiDay = expressAsyncHandler(
   }
 );
 
-// Create OTM Short Straddle Multi-Day Multi-Entry
-// Create OTM Short Straddle Multi-Day Multi-Entry
+// Create OTM Short Straddle Multi-Day Multi-Entry Exit at the same time
 exports.createOTMShortStraddleMultiEntry = expressAsyncHandler(
   async (req, res, next) => {
     try {
