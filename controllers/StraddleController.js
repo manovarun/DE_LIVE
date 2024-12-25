@@ -693,7 +693,8 @@ exports.gridSearchAndSaveShortStraddle = expressAsyncHandler(
         stopLossPercentage,
         entryTimes,
         exitTimes,
-        stockSymbol, // Added stockSymbol dynamically
+        stockSymbol,
+        searchType,
       } = req.body;
 
       if (
@@ -707,11 +708,12 @@ exports.gridSearchAndSaveShortStraddle = expressAsyncHandler(
         !Array.isArray(exitTimes) ||
         entryTimes.length === 0 ||
         exitTimes.length === 0 ||
-        !stockSymbol // Validate stockSymbol
+        !stockSymbol ||
+        !searchType
       ) {
         return next(
           new AppError(
-            'Please provide valid timeInterval, fromDate, toDate, expiry, lotSize, stopLossPercentage, stockSymbol, and non-empty entryTimes and exitTimes arrays.',
+            'Please provide valid timeInterval, fromDate, toDate, expiry, lotSize, stopLossPercentage, stockSymbol, searchType, and non-empty entryTimes and exitTimes arrays.',
             400
           )
         );
@@ -737,7 +739,7 @@ exports.gridSearchAndSaveShortStraddle = expressAsyncHandler(
             continue;
           }
 
-          const strategyId = `${stockSymbol.replace(
+          const strategyId = `${searchType}-${stockSymbol.replace(
             / /g,
             '_'
           )}-${fromDate}-${toDate}-${expiry}-${timeInterval}-${entryTime}-${exitTime}`;
@@ -750,9 +752,11 @@ exports.gridSearchAndSaveShortStraddle = expressAsyncHandler(
             currentDate.add(1, 'day')
           ) {
             const date = currentDate.format('YYYY-MM-DD');
+
             console.log(
               `Processing date: ${date} for entry: ${entryTime} and exit: ${exitTime}`
             );
+
             const entryTimeIST = moment.tz(
               `${date} ${entryTime}`,
               'YYYY-MM-DD HH:mm',
@@ -767,13 +771,11 @@ exports.gridSearchAndSaveShortStraddle = expressAsyncHandler(
             const entryTimeStr = entryTimeIST.format('YYYY-MM-DDTHH:mm:ssZ');
             const exitTimeStr = exitTimeIST.format('YYYY-MM-DDTHH:mm:ssZ');
 
-            let ceExitTime, peExitTime;
-
             try {
               const spotData = await HistoricalIndicesData.findOne({
                 timeInterval,
                 datetime: entryTimeStr,
-                stockSymbol, // Use the dynamic stockSymbol
+                stockSymbol,
               });
 
               if (!spotData) {
@@ -784,7 +786,6 @@ exports.gridSearchAndSaveShortStraddle = expressAsyncHandler(
               }
 
               const spotPrice = spotData.open;
-
               const strikePriceInterval = stockSymbol === 'Nifty 50' ? 50 : 100;
               const nearestStrikePrice =
                 Math.round(spotPrice / strikePriceInterval) *
@@ -841,25 +842,17 @@ exports.gridSearchAndSaveShortStraddle = expressAsyncHandler(
               for (const candle of ceExitData) {
                 if (candle.high >= ceStopLoss) {
                   ceExitPrice = ceStopLoss;
-                  ceExitTime = moment(candle.datetime).format(
-                    'YYYY-MM-DD HH:mm:ss'
-                  );
                   break;
                 }
                 ceExitPrice = candle.close;
-                ceExitTime = exitTimeIST.format('YYYY-MM-DD HH:mm:ss');
               }
 
               for (const candle of peExitData) {
                 if (candle.high >= peStopLoss) {
                   peExitPrice = peStopLoss;
-                  peExitTime = moment(candle.datetime).format(
-                    'YYYY-MM-DD HH:mm:ss'
-                  );
                   break;
                 }
                 peExitPrice = candle.close;
-                peExitTime = exitTimeIST.format('YYYY-MM-DD HH:mm:ss');
               }
 
               const vixData = await HistoricalIndicesData.findOne({
@@ -876,36 +869,7 @@ exports.gridSearchAndSaveShortStraddle = expressAsyncHandler(
 
               overallCumulativeProfit += totalProfitLoss;
 
-              const transactionLog = [
-                {
-                  date,
-                  entryTime: entryTimeIST.format('YYYY-MM-DD HH:mm:ss'),
-                  exitTime: ceExitTime,
-                  type: 'CE',
-                  strikePrice: nearestStrikePrice,
-                  qty: lotSize,
-                  entryPrice: ceEntryPrice,
-                  exitPrice: ceExitPrice,
-                  stopLoss: ceStopLoss,
-                  vix: vixValue,
-                  profitLoss: ceProfitLoss,
-                },
-                {
-                  date,
-                  entryTime: entryTimeIST.format('YYYY-MM-DD HH:mm:ss'),
-                  exitTime: peExitTime,
-                  type: 'PE',
-                  strikePrice: nearestStrikePrice,
-                  qty: lotSize,
-                  entryPrice: peEntryPrice,
-                  exitPrice: peExitPrice,
-                  stopLoss: peStopLoss,
-                  vix: vixValue,
-                  profitLoss: peProfitLoss,
-                },
-              ];
-
-              const result = {
+              results.push({
                 date,
                 spotPrice,
                 strikePrice: nearestStrikePrice,
@@ -915,25 +879,45 @@ exports.gridSearchAndSaveShortStraddle = expressAsyncHandler(
                 entryPrice: ceEntryPrice + peEntryPrice,
                 exitPrice: ceExitPrice + peExitPrice,
                 profitLoss: totalProfitLoss,
-                transactions: transactionLog,
-              };
-
-              results.push(result);
+                cumulativeProfit: overallCumulativeProfit,
+                transactions: [
+                  {
+                    date,
+                    entryTime: entryTimeIST.format('YYYY-MM-DD HH:mm:ss'),
+                    exitTime: exitTimeIST.format('YYYY-MM-DD HH:mm:ss'),
+                    type: 'CE',
+                    strikePrice: nearestStrikePrice,
+                    qty: lotSize,
+                    entryPrice: ceEntryPrice,
+                    exitPrice: ceExitPrice,
+                    stopLoss: ceStopLoss,
+                    vix: vixValue,
+                    profitLoss: ceProfitLoss,
+                  },
+                  {
+                    date,
+                    entryTime: entryTimeIST.format('YYYY-MM-DD HH:mm:ss'),
+                    exitTime: exitTimeIST.format('YYYY-MM-DD HH:mm:ss'),
+                    type: 'PE',
+                    strikePrice: nearestStrikePrice,
+                    qty: lotSize,
+                    entryPrice: peEntryPrice,
+                    exitPrice: peExitPrice,
+                    stopLoss: peStopLoss,
+                    vix: vixValue,
+                    profitLoss: peProfitLoss,
+                  },
+                ],
+              });
             } catch (error) {
               console.error(`Error processing date ${date}:`, error.message);
             }
           }
 
-          results.sort((a, b) => new Date(b.date) - new Date(a.date));
-
-          let cumulativeProfit = 0;
-          results = results.reverse().map((entry) => {
-            cumulativeProfit += entry.profitLoss;
-            return {
-              cumulativeProfit,
-              ...entry,
-            };
-          });
+          totalTradeDays = results.length;
+          noOfProfitableDays = results.filter(
+            (day) => day.profitLoss > 0
+          ).length;
 
           const strategy = {
             strategyId,
@@ -944,16 +928,17 @@ exports.gridSearchAndSaveShortStraddle = expressAsyncHandler(
             expiry,
             lotSize,
             stopLossPercentage,
-            stockSymbol,
+            searchType,
             entryTime,
             exitTime,
+            totalTradeDays,
+            noOfProfitableDays,
             cumulativeProfit: overallCumulativeProfit,
             results: results.reverse(),
           };
 
           allResults.push(strategy);
 
-          // Save to database using upsert
           await ShortStraddleStrategy.updateOne(
             { strategyId },
             { $set: strategy },

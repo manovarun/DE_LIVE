@@ -40,6 +40,9 @@ const shortStraddleStrategySchema = new mongoose.Schema({
   stopLossPercentage: { type: Number, required: true },
   entryTime: { type: String, required: true },
   exitTime: { type: String, required: true },
+  searchType: { type: String, required: true }, // Added searchType (e.g., DAY, WEEK, MONTH)
+  totalTradeDays: { type: Number, required: true }, // Added totalTradeDays
+  noOfProfitableDays: { type: Number, required: true },
   cumulativeProfit: { type: Number, required: true },
   results: [resultSchema], // Nested results for each day
 });
