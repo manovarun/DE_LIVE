@@ -8,6 +8,7 @@ const {
   gridSearchAndSaveShortStraddle,
   createOTMShortStraddleMultiDay,
   createOTMShortStraddleMultiEntry,
+  createOTMShortStraddleMultiDayMultiExit,
 } = require('../controllers/StraddleController');
 
 const router = express.Router();
@@ -26,5 +27,8 @@ router
 // OTM ROUTES
 router.route('/straddle-otm').post(createOTMShortStraddleMultiDay);
 router.route('/straddle-otm-multi').post(createOTMShortStraddleMultiEntry);
+router
+  .route('/straddle-multi-exit')
+  .post(createOTMShortStraddleMultiDayMultiExit);
 
 module.exports = router;
