@@ -5,7 +5,9 @@ mongoose.set('strictQuery', false);
 
 const connectDB = async () => {
   try {
-    const conn = await mongoose.connect(process.env.MONGO_URI);
+    const conn = await mongoose.connect(process.env.MONGO_URI, {
+      serverSelectionTimeoutMS: 100000,
+    });
     console.log(
       `MongoDB Connected: ${conn.connection.host}:${conn.connection.port}/${conn.connection.name}`
         .cyan.underline
