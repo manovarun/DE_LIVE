@@ -1988,6 +1988,8 @@ exports.createOTMShortStraddleMultiDayMultiExit = expressAsyncHandler(
 
       let results = [];
       let overallCumulativeProfit = 0;
+      let totalTradeDays = 0;
+      let noOfProfitableDays = 0;
 
       for (
         let currentDate = fromDateMoment.clone();
@@ -2165,6 +2167,11 @@ exports.createOTMShortStraddleMultiDayMultiExit = expressAsyncHandler(
 
         if (dailyTransactions.length > 0) {
           overallCumulativeProfit += dailyProfitLoss;
+          totalTradeDays++;
+
+          if (dailyProfitLoss > 0) {
+            noOfProfitableDays++;
+          }
 
           results.push({
             cumulativeProfit: overallCumulativeProfit,
@@ -2181,6 +2188,8 @@ exports.createOTMShortStraddleMultiDayMultiExit = expressAsyncHandler(
 
       res.status(200).json({
         status: 'success',
+        totalTradeDays,
+        noOfProfitableDays,
         data: results.reverse(),
       });
     } catch (error) {
