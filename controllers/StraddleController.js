@@ -1080,35 +1080,61 @@ exports.gridSearchAndSaveShortStraddleStrikePrice = expressAsyncHandler(
                 Math.round(spotPrice / strikePriceInterval) *
                 strikePriceInterval;
 
-              const entryOptions = await HistoricalOptionData.find({
+              // Fetch premiums for the base strike price
+              const entryOptionsBase = await HistoricalOptionData.find({
                 timeInterval,
                 datetime: entryTimeStr,
                 strikePrice: baseStrikePrice,
                 expiry,
               });
 
-              const callOptionEntry = entryOptions.find(
+              const callOptionBase = entryOptionsBase.find(
                 (opt) => opt.optionType === 'CE'
               );
-              const putOptionEntry = entryOptions.find(
+              const putOptionBase = entryOptionsBase.find(
                 (opt) => opt.optionType === 'PE'
               );
 
-              if (!callOptionEntry || !putOptionEntry) {
+              if (!callOptionBase || !putOptionBase) {
                 console.warn(
-                  `Options data not found for entry at strike: ${baseStrikePrice}, expiry: ${expiry}. Skipping.`
+                  `Options data not found for base strike: ${baseStrikePrice}, expiry: ${expiry}. Skipping.`
                 );
                 continue;
               }
 
-              const ceEntryPrice = callOptionEntry.close;
-              const peEntryPrice = putOptionEntry.close;
-
+              // Calculate adjusted strike price
               const adjustedStrikePrice =
-                baseStrikePrice + (ceEntryPrice - peEntryPrice);
+                baseStrikePrice + (callOptionBase.close - putOptionBase.close);
+
+              // Determine nearest strike price
               const nearestStrikePrice =
                 Math.round(adjustedStrikePrice / strikePriceInterval) *
                 strikePriceInterval;
+
+              // Fetch premiums for the nearest strike price
+              const entryOptionsNearest = await HistoricalOptionData.find({
+                timeInterval,
+                datetime: entryTimeStr,
+                strikePrice: nearestStrikePrice,
+                expiry,
+              });
+
+              const callOptionNearest = entryOptionsNearest.find(
+                (opt) => opt.optionType === 'CE'
+              );
+              const putOptionNearest = entryOptionsNearest.find(
+                (opt) => opt.optionType === 'PE'
+              );
+
+              if (!callOptionNearest || !putOptionNearest) {
+                console.warn(
+                  `Options data not found for nearest strike: ${nearestStrikePrice}, expiry: ${expiry}. Skipping.`
+                );
+                continue;
+              }
+
+              const ceEntryPrice = callOptionNearest.close;
+              const peEntryPrice = putOptionNearest.close;
 
               const ceStopLoss =
                 ceEntryPrice + ceEntryPrice * (stopLossPercentage / 100);
