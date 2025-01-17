@@ -12,7 +12,7 @@ const {
   createPremiumBasedShortStraddle,
   createAndSaveShortStraddleWithIndicators,
   createOTMShortStraddleMultiDayByDays,
-  gridSearchForSelectedWeekDays,
+  saveGridSearchForSelectedWeekDays,
 } = require('../controllers/StraddleController');
 
 const router = express.Router();
@@ -38,6 +38,6 @@ router
 router.route('/straddle-premium').post(createPremiumBasedShortStraddle);
 router.route('/straddle-vix-io').post(createAndSaveShortStraddleWithIndicators);
 router.route('/straddle-weekdays').post(createOTMShortStraddleMultiDayByDays);
-router.route('/straddle-weekdays-grid').post(gridSearchForSelectedWeekDays);
+router.route('/straddle-weekdays-grid').post(saveGridSearchForSelectedWeekDays);
 
 module.exports = router;
