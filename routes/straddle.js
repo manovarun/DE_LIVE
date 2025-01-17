@@ -13,6 +13,7 @@ const {
   createAndSaveShortStraddleWithIndicators,
   createOTMShortStraddleMultiDayByDays,
   saveGridSearchForSelectedWeekDays,
+  gridSearchAndSaveShortStraddleStrikePrice,
 } = require('../controllers/StraddleController');
 
 const router = express.Router();
@@ -23,6 +24,9 @@ router
   .route('/straddle-multi-day-save')
   .post(createAndSaveShortStraddleMultiDay);
 router.route('/straddle-multi-grid-save').post(gridSearchAndSaveShortStraddle);
+router
+  .route('/straddle-multi-grid-strike-save')
+  .post(gridSearchAndSaveShortStraddleStrikePrice);
 router.route('/straddle-multi-grid').post(gridSearchShortStraddle);
 router
   .route('/straddle-multi-grid-profit')
