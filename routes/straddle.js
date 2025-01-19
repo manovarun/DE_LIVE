@@ -13,7 +13,8 @@ const {
   createAndSaveShortStraddleWithIndicators,
   createOTMShortStraddleMultiDayByDays,
   saveGridSearchForSelectedWeekDays,
-  gridSearchAndSaveShortStraddleStrikePrice,
+  gridSearchAndSaveShortStraddleStrike,
+  createOTMShortStraddleMultiDayMultiExitStrike,
 } = require('../controllers/StraddleController');
 
 const router = express.Router();
@@ -26,7 +27,7 @@ router
 router.route('/straddle-multi-grid-save').post(gridSearchAndSaveShortStraddle);
 router
   .route('/straddle-multi-grid-strike-save')
-  .post(gridSearchAndSaveShortStraddleStrikePrice);
+  .post(gridSearchAndSaveShortStraddleStrike);
 router.route('/straddle-multi-grid').post(gridSearchShortStraddle);
 router
   .route('/straddle-multi-grid-profit')
@@ -38,6 +39,9 @@ router.route('/straddle-otm-multi').post(createOTMShortStraddleMultiEntry);
 router
   .route('/straddle-multi-exit')
   .post(createOTMShortStraddleMultiDayMultiExit);
+router
+  .route('/straddle-multi-exit-strike')
+  .post(createOTMShortStraddleMultiDayMultiExitStrike);
 
 router.route('/straddle-premium').post(createPremiumBasedShortStraddle);
 router.route('/straddle-vix-io').post(createAndSaveShortStraddleWithIndicators);
