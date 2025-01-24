@@ -2023,9 +2023,9 @@ exports.createOTMShortStraddleMultiEntry = expressAsyncHandler(
         expiry,
         lotSize,
         stopLossPercentage,
-        entryTimes, // Array of entry times
+        entryTimes,
         exitTime,
-        otmOffset = 0, // Default to 0 for ATM calculation
+        otmOffset = 0,
         stockSymbol,
       } = req.body;
 
@@ -2037,7 +2037,7 @@ exports.createOTMShortStraddleMultiEntry = expressAsyncHandler(
         !lotSize ||
         !stopLossPercentage ||
         !Array.isArray(entryTimes) ||
-        entryTimes.length === 0 || // Validate entryTimes array
+        entryTimes.length === 0 ||
         !exitTime ||
         !stockSymbol
       ) {
@@ -2058,8 +2058,8 @@ exports.createOTMShortStraddleMultiEntry = expressAsyncHandler(
 
       let results = [];
       let overallCumulativeProfit = 0;
-      let profitableDaysCount = 0; // Count of profitable days
-      let totalTradeDays = 0; // Count of total trade days
+      let profitableDaysCount = 0;
+      let totalTradeDays = 0;
 
       for (
         let currentDate = fromDateMoment.clone();
@@ -2087,7 +2087,6 @@ exports.createOTMShortStraddleMultiEntry = expressAsyncHandler(
           const entryTimeStr = entryTimeIST.format('YYYY-MM-DDTHH:mm:ssZ');
           const exitTimeStr = exitTimeIST.format('YYYY-MM-DDTHH:mm:ssZ');
 
-          // Fetch spot data for the day
           const spotData = await HistoricalIndicesData.findOne({
             timeInterval,
             datetime: entryTimeStr,
@@ -2098,42 +2097,67 @@ exports.createOTMShortStraddleMultiEntry = expressAsyncHandler(
             console.warn(
               `No spot data found for ${stockSymbol} on ${date}. Skipping.`
             );
-            continue; // Skip the day if no spot data is found
+            continue;
           }
 
-          const spotPrice = spotData.open;
+          const spotPrice = spotData.close;
 
           try {
             const strikePriceInterval = stockSymbol === 'Nifty 50' ? 50 : 100;
-            const atmStrikePrice =
+            const baseStrikePrice =
               Math.round(spotPrice / strikePriceInterval) * strikePriceInterval;
 
-            const otmCEPrice = atmStrikePrice + otmOffset;
-            const otmPEPrice = atmStrikePrice - otmOffset;
-
-            const entryOptions = await HistoricalOptionData.find({
+            const entryOptionsBase = await HistoricalOptionData.find({
               timeInterval,
               datetime: entryTimeStr,
-              strikePrice: { $in: [otmCEPrice, otmPEPrice] },
+              strikePrice: baseStrikePrice,
               expiry,
             });
 
-            const callOptionEntry = entryOptions.find(
-              (opt) => opt.optionType === 'CE' && opt.strikePrice === otmCEPrice
+            const callOptionBase = entryOptionsBase.find(
+              (opt) => opt.optionType === 'CE'
             );
-            const putOptionEntry = entryOptions.find(
-              (opt) => opt.optionType === 'PE' && opt.strikePrice === otmPEPrice
+            const putOptionBase = entryOptionsBase.find(
+              (opt) => opt.optionType === 'PE'
             );
 
-            if (!callOptionEntry || !putOptionEntry) {
+            if (!callOptionBase || !putOptionBase) {
               console.warn(
-                `Options data not found for CE: ${otmCEPrice}, PE: ${otmPEPrice}, expiry: ${expiry}. Skipping entry at ${entryTime}.`
+                `Options data not found for base strike: ${baseStrikePrice}, expiry: ${expiry}. Skipping.`
               );
               continue;
             }
 
-            const ceEntryPrice = callOptionEntry.open;
-            const peEntryPrice = putOptionEntry.open;
+            const adjustedStrikePrice =
+              baseStrikePrice + (callOptionBase.close - putOptionBase.close);
+
+            const nearestStrikePrice =
+              Math.round(adjustedStrikePrice / strikePriceInterval) *
+              strikePriceInterval;
+
+            const entryOptionsNearest = await HistoricalOptionData.find({
+              timeInterval,
+              datetime: entryTimeStr,
+              strikePrice: nearestStrikePrice,
+              expiry,
+            });
+
+            const callOptionNearest = entryOptionsNearest.find(
+              (opt) => opt.optionType === 'CE'
+            );
+            const putOptionNearest = entryOptionsNearest.find(
+              (opt) => opt.optionType === 'PE'
+            );
+
+            if (!callOptionNearest || !putOptionNearest) {
+              console.warn(
+                `Options data not found for nearest strike: ${nearestStrikePrice}, expiry: ${expiry}. Skipping.`
+              );
+              continue;
+            }
+
+            const ceEntryPrice = callOptionNearest.close;
+            const peEntryPrice = putOptionNearest.close;
 
             const ceStopLoss =
               ceEntryPrice + ceEntryPrice * (stopLossPercentage / 100);
@@ -2145,7 +2169,7 @@ exports.createOTMShortStraddleMultiEntry = expressAsyncHandler(
 
             const ceExitData = await HistoricalOptionData.find({
               timeInterval,
-              strikePrice: otmCEPrice,
+              strikePrice: nearestStrikePrice,
               expiry,
               optionType: 'CE',
               datetime: { $gte: entryTimeStr, $lte: exitTimeStr },
@@ -2153,7 +2177,7 @@ exports.createOTMShortStraddleMultiEntry = expressAsyncHandler(
 
             const peExitData = await HistoricalOptionData.find({
               timeInterval,
-              strikePrice: otmPEPrice,
+              strikePrice: nearestStrikePrice,
               expiry,
               optionType: 'PE',
               datetime: { $gte: entryTimeStr, $lte: exitTimeStr },
@@ -2203,8 +2227,7 @@ exports.createOTMShortStraddleMultiEntry = expressAsyncHandler(
               entryTime: entryTimeIST.format('YYYY-MM-DD HH:mm:ss'),
               exitTime: ceExitTime,
               type: 'CE',
-              atmStrikePrice,
-              strikePrice: otmCEPrice,
+              strikePrice: nearestStrikePrice,
               qty: lotSize,
               entryPrice: ceEntryPrice,
               exitPrice: ceExitPrice,
@@ -2218,8 +2241,7 @@ exports.createOTMShortStraddleMultiEntry = expressAsyncHandler(
               entryTime: entryTimeIST.format('YYYY-MM-DD HH:mm:ss'),
               exitTime: peExitTime,
               type: 'PE',
-              atmStrikePrice,
-              strikePrice: otmPEPrice,
+              strikePrice: nearestStrikePrice,
               qty: lotSize,
               entryPrice: peEntryPrice,
               exitPrice: peExitPrice,

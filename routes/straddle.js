@@ -17,6 +17,9 @@ const {
   createOTMShortStraddleMultiDayMultiExitStrike,
   saveGridSearchForSelectedWeekDaysStrike,
 } = require('../controllers/StraddleController');
+const {
+  gridSearchAndSaveLongStraddleStrike,
+} = require('../controllers/LongStraddleController');
 
 const router = express.Router();
 
@@ -52,3 +55,8 @@ router
   .route('/straddle-weekdays-grid-stike')
   .post(saveGridSearchForSelectedWeekDaysStrike);
 module.exports = router;
+
+//LONG STRADDLE
+router
+  .route('/long-straddle-multi-grid-strike-save')
+  .post(gridSearchAndSaveLongStraddleStrike);

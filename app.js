@@ -10,6 +10,7 @@ const connectDB = require('./db');
 connectDB();
 
 const straddleRouter = require('./routes/straddle');
+const socketRouter = require('./routes/socket');
 
 const app = express();
 
@@ -24,6 +25,7 @@ app.use(cookieParser());
 app.use(express.static(path.join(__dirname, 'public')));
 
 app.use('/api/straddle', straddleRouter);
+app.use('/api/socket', socketRouter);
 
 app.use(GlobalErrorHandler);
 
