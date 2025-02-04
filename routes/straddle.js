@@ -16,6 +16,9 @@ const {
   gridSearchAndSaveShortStraddleStrike,
   createOTMShortStraddleMultiDayMultiExitStrike,
   saveGridSearchForSelectedWeekDaysStrike,
+  TslGridSearchAndSaveShortStraddleStrike,
+  createShortStraddle,
+  gridSearchAndSaveShortStraddleStrikeAdjust,
 } = require('../controllers/StraddleController');
 const {
   gridSearchAndSaveLongStraddleStrike,
@@ -54,9 +57,23 @@ router.route('/straddle-weekdays-grid').post(saveGridSearchForSelectedWeekDays);
 router
   .route('/straddle-weekdays-grid-stike')
   .post(saveGridSearchForSelectedWeekDaysStrike);
-module.exports = router;
+
+//TRAILING STOP LOSS
+router
+  .route('/tsl-straddle-multi-grid-strike-save')
+  .post(TslGridSearchAndSaveShortStraddleStrike);
 
 //LONG STRADDLE
 router
   .route('/long-straddle-multi-grid-strike-save')
   .post(gridSearchAndSaveLongStraddleStrike);
+
+//VIX CONDITION
+router.route('/vix-straddle').post(createShortStraddle);
+
+//ADJUST RENTER
+router
+  .route('/adjust-straddle')
+  .post(gridSearchAndSaveShortStraddleStrikeAdjust);
+
+module.exports = router;

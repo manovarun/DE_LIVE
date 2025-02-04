@@ -11,6 +11,7 @@ connectDB();
 
 const straddleRouter = require('./routes/straddle');
 const socketRouter = require('./routes/socket');
+const shortRouter = require('./routes/short');
 
 const app = express();
 
@@ -26,6 +27,7 @@ app.use(express.static(path.join(__dirname, 'public')));
 
 app.use('/api/straddle', straddleRouter);
 app.use('/api/socket', socketRouter);
+app.use('/api/short', shortRouter);
 
 app.use(GlobalErrorHandler);
 
