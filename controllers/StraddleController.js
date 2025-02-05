@@ -2428,10 +2428,14 @@ exports.createOTMShortStraddleMultiDayMultiExitStrike = expressAsyncHandler(
             const entryOptionsNearest = await HistoricalOptionData.find({
               timeInterval,
               datetime: entryTimeStr,
-              strikePrice: { $in: [otmCEPrice, otmPEPrice] },
               expiry,
+              $or: [
+                { strikePrice: otmCEPrice, optionType: 'CE' },
+                { strikePrice: otmPEPrice, optionType: 'PE' },
+              ],
             });
 
+            console.log(entryOptionsNearest);
             const callOptionNearest = entryOptionsNearest.find(
               (opt) => opt.optionType === 'CE'
             );
@@ -2460,7 +2464,7 @@ exports.createOTMShortStraddleMultiDayMultiExitStrike = expressAsyncHandler(
 
             const ceExitData = await HistoricalOptionData.find({
               timeInterval,
-              strikePrice: nearestStrikePrice,
+              strikePrice: otmCEPrice,
               expiry,
               optionType: 'CE',
               datetime: { $gte: entryTimeStr, $lte: exitTimeStr },
@@ -2468,7 +2472,7 @@ exports.createOTMShortStraddleMultiDayMultiExitStrike = expressAsyncHandler(
 
             const peExitData = await HistoricalOptionData.find({
               timeInterval,
-              strikePrice: nearestStrikePrice,
+              strikePrice: otmPEPrice,
               expiry,
               optionType: 'PE',
               datetime: { $gte: entryTimeStr, $lte: exitTimeStr },
