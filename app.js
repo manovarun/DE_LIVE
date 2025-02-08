@@ -10,6 +10,7 @@ const connectDB = require('./db');
 connectDB();
 
 const straddleRouter = require('./routes/straddle');
+const strangleRouter = require('./routes/strangle');
 const socketRouter = require('./routes/socket');
 const shortRouter = require('./routes/short');
 
@@ -26,6 +27,7 @@ app.use(cookieParser());
 app.use(express.static(path.join(__dirname, 'public')));
 
 app.use('/api/straddle', straddleRouter);
+app.use('/api/strangle', strangleRouter);
 app.use('/api/socket', socketRouter);
 app.use('/api/short', shortRouter);
 

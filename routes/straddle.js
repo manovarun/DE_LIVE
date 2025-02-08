@@ -19,6 +19,7 @@ const {
   TslGridSearchAndSaveShortStraddleStrike,
   createShortStraddle,
   gridSearchAndSaveShortStraddleStrikeAdjust,
+  createOTMIronCondorMultiDayMultiExitStrike,
 } = require('../controllers/StraddleController');
 const {
   gridSearchAndSaveLongStraddleStrike,
@@ -46,9 +47,6 @@ router.route('/straddle-otm-multi').post(createOTMShortStraddleMultiEntry);
 router
   .route('/straddle-multi-exit')
   .post(createOTMShortStraddleMultiDayMultiExit);
-router
-  .route('/straddle-multi-exit-strike')
-  .post(createOTMShortStraddleMultiDayMultiExitStrike);
 
 router.route('/straddle-premium').post(createPremiumBasedShortStraddle);
 router.route('/straddle-vix-io').post(createAndSaveShortStraddleWithIndicators);
@@ -75,5 +73,8 @@ router.route('/vix-straddle').post(createShortStraddle);
 router
   .route('/adjust-straddle')
   .post(gridSearchAndSaveShortStraddleStrikeAdjust);
+
+//IRON CONDOR
+router.route('/iron-condor').post(createOTMIronCondorMultiDayMultiExitStrike);
 
 module.exports = router;
