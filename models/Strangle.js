@@ -6,6 +6,7 @@ const transactionSchema = new mongoose.Schema({
   exitTime: { type: String, required: true },
   type: { type: String, enum: ['CE', 'PE'], required: true },
   strikePrice: { type: Number, required: true },
+  otmStrikePrice: { type: Number, required: true },
   qty: { type: Number, required: true },
   entryPrice: { type: Number, required: true },
   exitPrice: { type: Number, required: true },
