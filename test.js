@@ -1,6 +1,5 @@
-//Working Short Straddle Multi-Day Grid Search and Save to database, updated with the new strike price calculation
-exports.gridSearchAndSaveShortStraddleStrike = expressAsyncHandler(
-  async (req, res, next) => {
+exports.createOTMShortStrangleMultiDayMultiExitStrikeIronCondor =
+  expressAsyncHandler(async (req, res, next) => {
     try {
       const {
         timeInterval,
@@ -8,11 +7,12 @@ exports.gridSearchAndSaveShortStraddleStrike = expressAsyncHandler(
         toDate,
         expiry,
         lotSize,
-        stopLossPercentage,
         entryTimes,
         exitTimes,
+        otmOffset = 0,
         stockSymbol,
         searchType,
+        wingWidth = 100,
       } = req.body;
 
       if (
@@ -21,7 +21,6 @@ exports.gridSearchAndSaveShortStraddleStrike = expressAsyncHandler(
         !toDate ||
         !expiry ||
         !lotSize ||
-        !stopLossPercentage ||
         !Array.isArray(entryTimes) ||
         !Array.isArray(exitTimes) ||
         entryTimes.length === 0 ||
@@ -29,19 +28,14 @@ exports.gridSearchAndSaveShortStraddleStrike = expressAsyncHandler(
         !stockSymbol ||
         !searchType
       ) {
-        return next(
-          new AppError(
-            'Please provide valid timeInterval, fromDate, toDate, expiry, lotSize, stopLossPercentage, stockSymbol, searchType, and non-empty entryTimes and exitTimes arrays.',
-            400
-          )
-        );
+        return next(new AppError('Missing required fields.', 400));
       }
 
       const fromDateMoment = moment(fromDate, 'YYYY-MM-DD');
       const toDateMoment = moment(toDate, 'YYYY-MM-DD');
 
       if (!fromDateMoment.isValid() || !toDateMoment.isValid()) {
-        return next(new AppError('Invalid date format provided.', 400));
+        return next(new AppError('Invalid date format.', 400));
       }
 
       const allResults = [];
@@ -52,7 +46,7 @@ exports.gridSearchAndSaveShortStraddleStrike = expressAsyncHandler(
             moment(exitTime, 'HH:mm').isSameOrBefore(moment(entryTime, 'HH:mm'))
           ) {
             console.warn(
-              `Skipping invalid combination: Entry: ${entryTime}, Exit: ${exitTime}`
+              `Skipping invalid time: Entry ${entryTime}, Exit ${exitTime}`
             );
             continue;
           }
@@ -61,6 +55,7 @@ exports.gridSearchAndSaveShortStraddleStrike = expressAsyncHandler(
             / /g,
             '_'
           )}-${fromDate}-${toDate}-${expiry}-${timeInterval}-${entryTime}-${exitTime}`;
+
           let results = [];
           let overallCumulativeProfit = 0;
 
@@ -72,7 +67,7 @@ exports.gridSearchAndSaveShortStraddleStrike = expressAsyncHandler(
             const date = currentDate.format('YYYY-MM-DD');
 
             console.log(
-              `Processing date: ${date} for entry: ${entryTime} and exit: ${exitTime}`
+              `Processing: ${date}, Entry: ${entryTime}, Exit: ${exitTime}`
             );
 
             const entryTimeIST = moment.tz(
@@ -80,6 +75,7 @@ exports.gridSearchAndSaveShortStraddleStrike = expressAsyncHandler(
               'YYYY-MM-DD HH:mm',
               'Asia/Kolkata'
             );
+
             const exitTimeIST = moment.tz(
               `${date} ${exitTime}`,
               'YYYY-MM-DD HH:mm',
@@ -98,121 +94,122 @@ exports.gridSearchAndSaveShortStraddleStrike = expressAsyncHandler(
 
               if (!spotData) {
                 console.warn(
-                  `${stockSymbol} spot data not found for ${date}. Skipping.`
+                  `No spot data for ${stockSymbol} on ${date}. Skipping.`
                 );
                 continue;
               }
 
               const spotPrice = spotData.close;
-              const strikePriceInterval = stockSymbol === 'Nifty 50' ? 50 : 100;
+
+              const strikePriceInterval =
+                stockSymbol === 'Nifty 50' ||
+                stockSymbol === 'Nifty Fin Service'
+                  ? 50
+                  : 100;
+
               const baseStrikePrice =
                 Math.round(spotPrice / strikePriceInterval) *
                 strikePriceInterval;
 
-              // Fetch premiums for the base strike price
-              const entryOptionsBase = await HistoricalOptionData.find({
+              // 🟢 Define the Strike Prices for the Iron Condor
+              const otmCEStrikePrice = baseStrikePrice + otmOffset;
+              const otmPEStrikePrice = baseStrikePrice - otmOffset;
+              const hedgeCEStrikePrice = otmCEStrikePrice + wingWidth;
+              const hedgePEStrikePrice = otmPEStrikePrice - wingWidth;
+
+              // Fetch options data for all 4 legs
+              const entryOptions = await HistoricalOptionData.find({
                 timeInterval,
                 datetime: entryTimeStr,
-                strikePrice: baseStrikePrice,
                 expiry,
+                $or: [
+                  { strikePrice: otmCEStrikePrice, optionType: 'CE' },
+                  { strikePrice: otmPEStrikePrice, optionType: 'PE' },
+                  { strikePrice: hedgeCEStrikePrice, optionType: 'CE' },
+                  { strikePrice: hedgePEStrikePrice, optionType: 'PE' },
+                ],
               });
 
-              const callOptionBase = entryOptionsBase.find(
-                (opt) => opt.optionType === 'CE'
+              const callOptionSell = entryOptions.find(
+                (opt) =>
+                  opt.optionType === 'CE' &&
+                  opt.strikePrice === otmCEStrikePrice
               );
-              const putOptionBase = entryOptionsBase.find(
-                (opt) => opt.optionType === 'PE'
+              const putOptionSell = entryOptions.find(
+                (opt) =>
+                  opt.optionType === 'PE' &&
+                  opt.strikePrice === otmPEStrikePrice
+              );
+              const callOptionBuy = entryOptions.find(
+                (opt) =>
+                  opt.optionType === 'CE' &&
+                  opt.strikePrice === hedgeCEStrikePrice
+              );
+              const putOptionBuy = entryOptions.find(
+                (opt) =>
+                  opt.optionType === 'PE' &&
+                  opt.strikePrice === hedgePEStrikePrice
               );
 
-              if (!callOptionBase || !putOptionBase) {
-                console.warn(
-                  `Options data not found for base strike: ${baseStrikePrice}, expiry: ${expiry}. Skipping.`
-                );
+              if (
+                !callOptionSell ||
+                !putOptionSell ||
+                !callOptionBuy ||
+                !putOptionBuy
+              ) {
+                console.warn(`Option data missing for ${date}. Skipping.`);
                 continue;
               }
 
-              // Calculate adjusted strike price
-              const adjustedStrikePrice =
-                baseStrikePrice + (callOptionBase.close - putOptionBase.close);
+              const ceEntryPrice = callOptionSell.close;
+              const peEntryPrice = putOptionSell.close;
 
-              // Determine nearest strike price
-              const nearestStrikePrice =
-                Math.round(adjustedStrikePrice / strikePriceInterval) *
-                strikePriceInterval;
+              const ceHedgeEntryPrice = callOptionBuy.close;
+              const peHedgeEntryPrice = putOptionBuy.close;
 
-              // Fetch premiums for the nearest strike price
-              const entryOptionsNearest = await HistoricalOptionData.find({
+              // 🟢 Fetch Exit Prices for the main short legs
+              const ceExitData = await HistoricalOptionData.findOne({
                 timeInterval,
-                datetime: entryTimeStr,
-                strikePrice: nearestStrikePrice,
+                datetime: exitTimeStr,
                 expiry,
-              });
-
-              const callOptionNearest = entryOptionsNearest.find(
-                (opt) => opt.optionType === 'CE'
-              );
-              const putOptionNearest = entryOptionsNearest.find(
-                (opt) => opt.optionType === 'PE'
-              );
-
-              if (!callOptionNearest || !putOptionNearest) {
-                console.warn(
-                  `Options data not found for nearest strike: ${nearestStrikePrice}, expiry: ${expiry}. Skipping.`
-                );
-                continue;
-              }
-
-              const ceEntryPrice = callOptionNearest.close;
-              const peEntryPrice = putOptionNearest.close;
-
-              const ceStopLoss =
-                ceEntryPrice + ceEntryPrice * (stopLossPercentage / 100);
-              const peStopLoss =
-                peEntryPrice + peEntryPrice * (stopLossPercentage / 100);
-
-              let ceExitPrice = ceEntryPrice;
-              let peExitPrice = peEntryPrice;
-
-              let ceExitTime = exitTimeIST.format('YYYY-MM-DD HH:mm:ss');
-              let peExitTime = exitTimeIST.format('YYYY-MM-DD HH:mm:ss');
-
-              const ceExitData = await HistoricalOptionData.find({
-                timeInterval,
-                strikePrice: nearestStrikePrice,
-                expiry,
+                strikePrice: otmCEStrikePrice,
                 optionType: 'CE',
-                datetime: { $gte: entryTimeStr, $lte: exitTimeStr },
-              }).sort({ datetime: 1 });
+              });
 
-              const peExitData = await HistoricalOptionData.find({
+              const peExitData = await HistoricalOptionData.findOne({
                 timeInterval,
-                strikePrice: nearestStrikePrice,
+                datetime: exitTimeStr,
                 expiry,
+                strikePrice: otmPEStrikePrice,
                 optionType: 'PE',
-                datetime: { $gte: entryTimeStr, $lte: exitTimeStr },
-              }).sort({ datetime: 1 });
+              });
 
-              for (const candle of ceExitData) {
-                if (candle.high >= ceStopLoss) {
-                  ceExitPrice = ceStopLoss;
-                  ceExitTime = moment(candle.datetime).format(
-                    'YYYY-MM-DD HH:mm:ss'
-                  );
-                  break;
-                }
-                ceExitPrice = candle.close;
-              }
+              // 🟢 Fetch Exit Prices for the Hedge Legs
+              const hedgeCeExitData = await HistoricalOptionData.findOne({
+                timeInterval,
+                datetime: exitTimeStr,
+                expiry,
+                strikePrice: hedgeCEStrikePrice,
+                optionType: 'CE',
+              });
 
-              for (const candle of peExitData) {
-                if (candle.high >= peStopLoss) {
-                  peExitPrice = peStopLoss;
-                  peExitTime = moment(candle.datetime).format(
-                    'YYYY-MM-DD HH:mm:ss'
-                  );
-                  break;
-                }
-                peExitPrice = candle.close;
-              }
+              const hedgePeExitData = await HistoricalOptionData.findOne({
+                timeInterval,
+                datetime: exitTimeStr,
+                expiry,
+                strikePrice: hedgePEStrikePrice,
+                optionType: 'PE',
+              });
+
+              const ceExitPrice = ceExitData ? ceExitData.close : ceEntryPrice;
+              const peExitPrice = peExitData ? peExitData.close : peEntryPrice;
+
+              const hedgeCeExitPrice = hedgeCeExitData
+                ? hedgeCeExitData.close
+                : ceHedgeEntryPrice;
+              const hedgePeExitPrice = hedgePeExitData
+                ? hedgePeExitData.close
+                : peHedgeEntryPrice;
 
               const vixData = await HistoricalIndicesData.findOne({
                 timeInterval,
@@ -222,19 +219,30 @@ exports.gridSearchAndSaveShortStraddleStrike = expressAsyncHandler(
 
               const vixValue = vixData ? vixData.close : null;
 
-              const ceProfitLoss = (ceEntryPrice - ceExitPrice) * lotSize;
-              const peProfitLoss = (peEntryPrice - peExitPrice) * lotSize;
-              const totalProfitLoss = ceProfitLoss + peProfitLoss;
+              // 🔹 Profit/Loss for Short Legs (Sold options)
+              const ceProfitLoss = (ceEntryPrice - ceExitPrice) * lotSize; // Sold CE: Profit if price decreases
+              const peProfitLoss = (peEntryPrice - peExitPrice) * lotSize; // Sold PE: Profit if price increases
+
+              // 🔹 Profit/Loss for Hedge Legs (Bought options) - FIXED!
+              const hedgeCeProfitLoss =
+                (hedgeCeExitPrice - ceHedgeEntryPrice) * lotSize; // Bought CE: Profit if price increases
+              const hedgePeProfitLoss =
+                (hedgePeExitPrice - peHedgeEntryPrice) * lotSize; // Bought PE: Profit if price decreases
+
+              // 🔹 Net Profit Calculation (Total Credit Received - Exit Costs)
+              const totalProfitLoss =
+                ceProfitLoss +
+                peProfitLoss + // Profit from short legs
+                (hedgeCeProfitLoss + hedgePeProfitLoss); // Profit from hedged legs
 
               overallCumulativeProfit += totalProfitLoss;
 
               results.push({
                 date,
                 spotPrice,
-                strikePrice: nearestStrikePrice,
+                strikePrice: baseStrikePrice,
                 expiry,
                 lotSize,
-                stopLossPercentage,
                 entryPrice: ceEntryPrice + peEntryPrice,
                 exitPrice: ceExitPrice + peExitPrice,
                 profitLoss: totalProfitLoss,
@@ -243,41 +251,72 @@ exports.gridSearchAndSaveShortStraddleStrike = expressAsyncHandler(
                   {
                     date,
                     entryTime: entryTimeIST.format('YYYY-MM-DD HH:mm:ss'),
-                    exitTime: ceExitTime,
+                    exitTime: exitTimeIST.format('YYYY-MM-DD HH:mm:ss'),
                     type: 'CE',
-                    strikePrice: nearestStrikePrice,
+                    strikePrice: baseStrikePrice,
+                    otmStrikePrice: otmCEStrikePrice,
                     qty: lotSize,
                     entryPrice: ceEntryPrice,
                     exitPrice: ceExitPrice,
-                    stopLoss: ceStopLoss,
                     vix: vixValue,
                     profitLoss: ceProfitLoss,
                   },
                   {
                     date,
                     entryTime: entryTimeIST.format('YYYY-MM-DD HH:mm:ss'),
-                    exitTime: peExitTime,
+                    exitTime: exitTimeIST.format('YYYY-MM-DD HH:mm:ss'),
                     type: 'PE',
-                    strikePrice: nearestStrikePrice,
+                    strikePrice: baseStrikePrice,
+                    otmStrikePrice: otmPEStrikePrice,
                     qty: lotSize,
                     entryPrice: peEntryPrice,
                     exitPrice: peExitPrice,
-                    stopLoss: peStopLoss,
                     vix: vixValue,
                     profitLoss: peProfitLoss,
+                  },
+                  {
+                    date,
+                    entryTime: entryTimeIST.format('YYYY-MM-DD HH:mm:ss'),
+                    exitTime: exitTimeIST.format('YYYY-MM-DD HH:mm:ss'),
+                    type: 'CE',
+                    strikePrice: baseStrikePrice,
+                    otmStrikePrice: hedgeCEStrikePrice,
+                    qty: lotSize,
+                    entryPrice: ceHedgeEntryPrice,
+                    exitPrice: hedgeCeExitPrice,
+                    vix: vixValue,
+                    profitLoss: hedgeCeProfitLoss,
+                  },
+                  {
+                    date,
+                    entryTime: entryTimeIST.format('YYYY-MM-DD HH:mm:ss'),
+                    exitTime: exitTimeIST.format('YYYY-MM-DD HH:mm:ss'),
+                    type: 'PE',
+                    strikePrice: baseStrikePrice,
+                    otmStrikePrice: hedgePEStrikePrice,
+                    qty: lotSize,
+                    entryPrice: peHedgeEntryPrice,
+                    exitPrice: hedgePeExitPrice,
+                    vix: vixValue,
+                    profitLoss: hedgePeProfitLoss,
                   },
                 ],
               });
             } catch (error) {
-              console.error(`Error processing date ${date}:`, error.message);
+              console.error(
+                `Error processing ${date} - ${entryTime}:`,
+                error.message
+              );
             }
           }
 
-          totalTradeDays = results.length;
-          noOfProfitableDays = results.filter(
+          // 📌 Compute Trade Statistics
+          const totalTradeDays = results.length;
+          const noOfProfitableDays = results.filter(
             (day) => day.profitLoss > 0
           ).length;
 
+          // 📌 Store the final strategy results
           const strategy = {
             strategyId,
             timeInterval,
@@ -286,7 +325,6 @@ exports.gridSearchAndSaveShortStraddleStrike = expressAsyncHandler(
             stockSymbol,
             expiry,
             lotSize,
-            stopLossPercentage,
             searchType,
             entryTime,
             exitTime,
@@ -296,324 +334,22 @@ exports.gridSearchAndSaveShortStraddleStrike = expressAsyncHandler(
             results: results.reverse(),
           };
 
-          allResults.push(strategy);
-
-          await ShortStraddleStrategy.updateOne(
+          await ShortStrangleStrategy.updateOne(
             { strategyId },
             { $set: strategy },
             { upsert: true }
           );
+
+          allResults.push(strategy);
         }
       }
 
       res.status(200).json({
         status: 'success',
+        // strategies: allResults,
       });
     } catch (error) {
-      console.error(
-        'Error performing grid search for short straddle:',
-        error.message
-      );
+      console.error('Error creating strategy:', error.message);
       next(error);
     }
-  }
-);
-
-// Create OTM Short Straddle Multi-Day Multi-Entry Exit at the same time, updated with the new strike price calculation
-exports.createOTMShortStraddleMultiDayMultiExitStrike = expressAsyncHandler(
-  async (req, res, next) => {
-    try {
-      const {
-        timeInterval,
-        fromDate,
-        toDate,
-        expiry,
-        lotSize,
-        stopLossPercentage,
-        entryTimes, // Array of entry times
-        exitTimes, // Array of exit times
-        otmOffset = 0, // Default to 0 for ATM calculation
-        stockSymbol,
-        searchType,
-      } = req.body;
-
-      if (
-        !timeInterval ||
-        !fromDate ||
-        !toDate ||
-        !expiry ||
-        !lotSize ||
-        !stopLossPercentage ||
-        !Array.isArray(entryTimes) ||
-        !Array.isArray(exitTimes) ||
-        entryTimes.length === 0 ||
-        exitTimes.length === 0 ||
-        !stockSymbol ||
-        !searchType
-      ) {
-        return next(
-          new AppError(
-            'Please provide valid timeInterval, fromDate, toDate, expiry, lotSize, stopLossPercentage, entryTimes, exitTimes, stockSymbol, and otmOffset.',
-            400
-          )
-        );
-      }
-
-      const fromDateMoment = moment(fromDate, 'YYYY-MM-DD');
-      const toDateMoment = moment(toDate, 'YYYY-MM-DD');
-
-      if (!fromDateMoment.isValid() || !toDateMoment.isValid()) {
-        return next(new AppError('Invalid date format provided.', 400));
-      }
-
-      let results = [];
-      let overallCumulativeProfit = 0;
-      let totalTradeDays = 0;
-      let noOfProfitableDays = 0;
-
-      for (
-        let currentDate = fromDateMoment.clone();
-        currentDate.isSameOrBefore(toDateMoment);
-        currentDate.add(1, 'day')
-      ) {
-        const date = currentDate.format('YYYY-MM-DD');
-        console.log(`Processing date: ${date}`);
-
-        let dailyTransactions = [];
-        let dailyProfitLoss = 0;
-        let spotPrice = null;
-
-        for (let i = 0; i < entryTimes.length; i++) {
-          const entryTime = entryTimes[i];
-          const exitTime = exitTimes[i];
-
-          const entryTimeIST = moment.tz(
-            `${date} ${entryTime}`,
-            'YYYY-MM-DD HH:mm',
-            'Asia/Kolkata'
-          );
-          const exitTimeIST = moment.tz(
-            `${date} ${exitTime}`,
-            'YYYY-MM-DD HH:mm',
-            'Asia/Kolkata'
-          );
-
-          const entryTimeStr = entryTimeIST.format('YYYY-MM-DDTHH:mm:ssZ');
-          const exitTimeStr = exitTimeIST.format('YYYY-MM-DDTHH:mm:ssZ');
-
-          try {
-            const spotData = await HistoricalIndicesData.findOne({
-              timeInterval,
-              datetime: entryTimeStr,
-              stockSymbol,
-            });
-
-            if (!spotData) {
-              console.warn(
-                `No spot data found for ${stockSymbol} on ${date}. Skipping entry at ${entryTime}.`
-              );
-              continue;
-            }
-
-            spotPrice = spotData.close;
-            const strikePriceInterval = stockSymbol === 'Nifty 50' ? 50 : 100;
-            const baseStrikePrice =
-              Math.round(spotPrice / strikePriceInterval) * strikePriceInterval;
-
-            const entryOptionsBase = await HistoricalOptionData.find({
-              timeInterval,
-              datetime: entryTimeStr,
-              strikePrice: baseStrikePrice,
-              expiry,
-            });
-
-            const callOptionBase = entryOptionsBase.find(
-              (opt) => opt.optionType === 'CE'
-            );
-
-            const putOptionBase = entryOptionsBase.find(
-              (opt) => opt.optionType === 'PE'
-            );
-
-            if (!callOptionBase || !putOptionBase) {
-              console.warn(
-                `Options data not found for base strike: ${baseStrikePrice}, expiry: ${expiry}. Skipping.`
-              );
-              continue;
-            }
-
-            const adjustedStrikePrice =
-              baseStrikePrice + (callOptionBase.close - putOptionBase.close);
-
-            const nearestStrikePrice =
-              Math.round(adjustedStrikePrice / strikePriceInterval) *
-              strikePriceInterval;
-
-            const otmCEPrice = nearestStrikePrice + otmOffset;
-            const otmPEPrice = nearestStrikePrice - otmOffset;
-
-            const entryOptionsNearest = await HistoricalOptionData.find({
-              timeInterval,
-              datetime: entryTimeStr,
-              expiry,
-              $or: [
-                { strikePrice: otmCEPrice, optionType: 'CE' },
-                { strikePrice: otmPEPrice, optionType: 'PE' },
-              ],
-            });
-
-            console.log(entryOptionsNearest);
-            const callOptionNearest = entryOptionsNearest.find(
-              (opt) => opt.optionType === 'CE'
-            );
-
-            const putOptionNearest = entryOptionsNearest.find(
-              (opt) => opt.optionType === 'PE'
-            );
-
-            if (!callOptionNearest || !putOptionNearest) {
-              console.warn(
-                `Options data not found for CE: ${otmCEPrice}, PE: ${otmPEPrice}, expiry: ${expiry}. Skipping entry at ${entryTime}.`
-              );
-              continue;
-            }
-
-            const ceEntryPrice = callOptionNearest.close;
-            const peEntryPrice = putOptionNearest.close;
-
-            const ceStopLoss =
-              ceEntryPrice + ceEntryPrice * (stopLossPercentage / 100);
-            const peStopLoss =
-              peEntryPrice + peEntryPrice * (stopLossPercentage / 100);
-
-            let ceExitPrice = ceEntryPrice;
-            let peExitPrice = peEntryPrice;
-
-            const ceExitData = await HistoricalOptionData.find({
-              timeInterval,
-              strikePrice: otmCEPrice,
-              expiry,
-              optionType: 'CE',
-              datetime: { $gte: entryTimeStr, $lte: exitTimeStr },
-            }).sort({ datetime: 1 });
-
-            const peExitData = await HistoricalOptionData.find({
-              timeInterval,
-              strikePrice: otmPEPrice,
-              expiry,
-              optionType: 'PE',
-              datetime: { $gte: entryTimeStr, $lte: exitTimeStr },
-            }).sort({ datetime: 1 });
-
-            let ceExitTime = exitTimeIST.format('YYYY-MM-DD HH:mm:ss');
-            let peExitTime = exitTimeIST.format('YYYY-MM-DD HH:mm:ss');
-
-            for (const candle of ceExitData) {
-              if (candle.high >= ceStopLoss) {
-                ceExitPrice = ceStopLoss;
-                ceExitTime = moment(candle.datetime).format(
-                  'YYYY-MM-DD HH:mm:ss'
-                );
-                break;
-              }
-              ceExitPrice = candle.close;
-            }
-
-            for (const candle of peExitData) {
-              if (candle.high >= peStopLoss) {
-                peExitPrice = peStopLoss;
-                peExitTime = moment(candle.datetime).format(
-                  'YYYY-MM-DD HH:mm:ss'
-                );
-                break;
-              }
-              peExitPrice = candle.close;
-            }
-
-            const vixData = await HistoricalIndicesData.findOne({
-              timeInterval,
-              datetime: entryTimeStr,
-              stockSymbol: 'India VIX',
-            });
-
-            const vixValue = vixData ? vixData.close : null;
-
-            const ceProfitLoss = (ceEntryPrice - ceExitPrice) * lotSize;
-            const peProfitLoss = (peEntryPrice - peExitPrice) * lotSize;
-            const totalProfitLoss = ceProfitLoss + peProfitLoss;
-
-            dailyProfitLoss += totalProfitLoss;
-
-            dailyTransactions.push({
-              date,
-              entryTime: entryTimeIST.format('YYYY-MM-DD HH:mm:ss'),
-              exitTime: ceExitTime,
-              type: 'CE',
-              strikePrice: nearestStrikePrice,
-              otmCEPrice,
-              qty: lotSize,
-              entryPrice: ceEntryPrice,
-              exitPrice: ceExitPrice,
-              stopLoss: ceStopLoss,
-              vix: vixValue,
-              profitLoss: ceProfitLoss,
-            });
-
-            dailyTransactions.push({
-              date,
-              entryTime: entryTimeIST.format('YYYY-MM-DD HH:mm:ss'),
-              exitTime: peExitTime,
-              type: 'PE',
-              strikePrice: nearestStrikePrice,
-              otmPEPrice,
-              qty: lotSize,
-              entryPrice: peEntryPrice,
-              exitPrice: peExitPrice,
-              stopLoss: peStopLoss,
-              vix: vixValue,
-              profitLoss: peProfitLoss,
-            });
-          } catch (error) {
-            console.error(
-              `Error processing date ${date} for entry ${entryTime}:`,
-              error.message
-            );
-          }
-        }
-
-        if (dailyTransactions.length > 0) {
-          overallCumulativeProfit += dailyProfitLoss;
-          totalTradeDays++;
-
-          if (dailyProfitLoss > 0) {
-            noOfProfitableDays++;
-          }
-
-          results.push({
-            cumulativeProfit: overallCumulativeProfit,
-            date,
-            spotPrice,
-            expiry,
-            lotSize,
-            stopLossPercentage,
-            profitLoss: dailyProfitLoss,
-            transactions: dailyTransactions,
-          });
-        }
-      }
-
-      res.status(200).json({
-        status: 'success',
-        totalTradeDays,
-        noOfProfitableDays,
-        data: results.reverse(),
-      });
-    } catch (error) {
-      console.error(
-        'Error creating multi-day OTM short straddle with multiple entries and exits:',
-        error.message
-      );
-      next(error);
-    }
-  }
-);
+  });
