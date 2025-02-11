@@ -45,6 +45,8 @@ const shortStrangleStrategySchema = new mongoose.Schema({
   totalTradeDays: { type: Number, required: true }, // Added totalTradeDays
   noOfProfitableDays: { type: Number, required: true },
   cumulativeProfit: { type: Number, required: true },
+  maxProfit: { type: Number, required: true },
+  maxLoss: { type: Number, required: true },
   results: [resultSchema], // Nested results for each day
 });
 

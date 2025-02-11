@@ -161,7 +161,6 @@ exports.createOTMShortStrangleMultiDayMultiExitStrike = expressAsyncHandler(
                 ],
               });
 
-              console.log(entryOptionsNearest);
               const callOptionNearest = entryOptionsNearest.find(
                 (opt) => opt.optionType === 'CE'
               );
@@ -764,6 +763,8 @@ exports.createOTMShortStrangle = expressAsyncHandler(async (req, res, next) => {
 
         let results = [];
         let overallCumulativeProfit = 0;
+        let maxProfit = Number.MIN_SAFE_INTEGER;
+        let maxLoss = Number.MAX_SAFE_INTEGER;
 
         for (
           let currentDate = fromDateMoment.clone();
@@ -943,6 +944,10 @@ exports.createOTMShortStrangle = expressAsyncHandler(async (req, res, next) => {
 
             overallCumulativeProfit += totalProfitLoss;
 
+            // Track Max Profit and Max Loss
+            maxProfit = Math.max(maxProfit, totalProfitLoss);
+            maxLoss = Math.min(maxLoss, totalProfitLoss);
+
             results.push({
               date,
               spotPrice,
@@ -1037,6 +1042,8 @@ exports.createOTMShortStrangle = expressAsyncHandler(async (req, res, next) => {
           totalTradeDays,
           noOfProfitableDays,
           cumulativeProfit: overallCumulativeProfit,
+          maxProfit,
+          maxLoss,
           results: results.reverse(),
         };
 
@@ -1123,6 +1130,8 @@ exports.createOTMShortStrangleMultiExpiry = expressAsyncHandler(
 
           let results = [];
           let overallCumulativeProfit = 0;
+          let maxProfit = Number.MIN_SAFE_INTEGER;
+          let maxLoss = Number.MAX_SAFE_INTEGER;
 
           for (
             let currentDate = fromDateMoment.clone();
@@ -1325,6 +1334,10 @@ exports.createOTMShortStrangleMultiExpiry = expressAsyncHandler(
 
               overallCumulativeProfit += totalProfitLoss;
 
+              // Track Max Profit and Max Loss
+              maxProfit = Math.max(maxProfit, totalProfitLoss);
+              maxLoss = Math.min(maxLoss, totalProfitLoss);
+
               results.push({
                 date,
                 spotPrice,
@@ -1418,6 +1431,8 @@ exports.createOTMShortStrangleMultiExpiry = expressAsyncHandler(
             totalTradeDays,
             noOfProfitableDays,
             cumulativeProfit: overallCumulativeProfit,
+            maxProfit,
+            maxLoss,
             results: results.reverse(),
           };
 
