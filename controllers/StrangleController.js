@@ -731,6 +731,7 @@ exports.createOTMShortStrangle = expressAsyncHandler(async (req, res, next) => {
       entryTimes.length === 0 ||
       exitTimes.length === 0 ||
       !stockSymbol ||
+      !stockName ||
       !searchType
     ) {
       return next(new AppError('Missing required fields.', 400));
@@ -1071,6 +1072,7 @@ exports.createOTMShortStrangleMultiExpiry = expressAsyncHandler(
         exitTimes,
         otmOffset = 0,
         stockSymbol,
+        stockName,
         searchType,
         wingWidth = 100,
         expiries, // Array of expiries [{ expiry: "30JAN2025", validUntil: "2025-01-30" }, { expiry: "27FEB2025", validUntil: "2025-02-27" }]
@@ -1086,6 +1088,7 @@ exports.createOTMShortStrangleMultiExpiry = expressAsyncHandler(
         entryTimes.length === 0 ||
         exitTimes.length === 0 ||
         !stockSymbol ||
+        !stockName ||
         !searchType ||
         !Array.isArray(expiries) ||
         expiries.length === 0
@@ -1202,6 +1205,7 @@ exports.createOTMShortStrangleMultiExpiry = expressAsyncHandler(
                 timeInterval,
                 datetime: entryTimeStr,
                 expiry,
+                stockName,
                 $or: [
                   { strikePrice: otmCEStrikePrice, optionType: 'CE' },
                   { strikePrice: otmPEStrikePrice, optionType: 'PE' },
@@ -1253,6 +1257,7 @@ exports.createOTMShortStrangleMultiExpiry = expressAsyncHandler(
                 datetime: exitTimeStr,
                 expiry,
                 strikePrice: otmCEStrikePrice,
+                stockName,
                 optionType: 'CE',
               });
 
@@ -1261,6 +1266,7 @@ exports.createOTMShortStrangleMultiExpiry = expressAsyncHandler(
                 datetime: exitTimeStr,
                 expiry,
                 strikePrice: otmPEStrikePrice,
+                stockName,
                 optionType: 'PE',
               });
 
@@ -1270,6 +1276,7 @@ exports.createOTMShortStrangleMultiExpiry = expressAsyncHandler(
                 datetime: exitTimeStr,
                 expiry,
                 strikePrice: hedgeCEStrikePrice,
+                stockName,
                 optionType: 'CE',
               });
 
@@ -1278,6 +1285,7 @@ exports.createOTMShortStrangleMultiExpiry = expressAsyncHandler(
                 datetime: exitTimeStr,
                 expiry,
                 strikePrice: hedgePEStrikePrice,
+                stockName,
                 optionType: 'PE',
               });
 
