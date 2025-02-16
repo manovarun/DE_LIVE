@@ -14,7 +14,6 @@ const {
   createOTMShortStraddleMultiDayByDays,
   saveGridSearchForSelectedWeekDays,
   gridSearchAndSaveShortStraddleStrike,
-  createOTMShortStraddleMultiDayMultiExitStrike,
   saveGridSearchForSelectedWeekDaysStrike,
   TslGridSearchAndSaveShortStraddleStrike,
   createShortStraddle,
