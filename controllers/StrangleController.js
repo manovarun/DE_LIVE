@@ -21,6 +21,7 @@ exports.OTMShortStrangle = expressAsyncHandler(async (req, res, next) => {
       stockSymbol,
       stockName,
       searchType,
+      selectedWeekdays = [],
     } = req.body;
 
     if (
@@ -84,8 +85,21 @@ exports.OTMShortStrangle = expressAsyncHandler(async (req, res, next) => {
         ) {
           const date = currentDate.format('YYYY-MM-DD');
 
+          const dayOfWeek = currentDate.format('ddd').toUpperCase(); // Get the day in uppercase (e.g., "MON", "TUE")
+
+          // ✅ Apply weekday filtering
+          if (
+            selectedWeekdays.length > 0 &&
+            !selectedWeekdays.includes(dayOfWeek)
+          ) {
+            console.log(
+              `Skipping ${date} (${dayOfWeek}), not in selected weekdays: ${selectedWeekdays}`
+            );
+            continue;
+          }
+
           console.log(
-            `Processing date: ${date} for entry: ${entryTime} and exit: ${exitTime}`
+            `Processing date: ${date} (${dayOfWeek}) for entry: ${entryTime} and exit: ${exitTime}`
           );
 
           // 📌 Select the correct expiry based on the current date
