@@ -5,13 +5,13 @@ const {
   createOTMShortStrangleMultiExpiryStopLoss,
   OTMShortStrangle,
   createOTMShortStrangleNSL,
-  OTMShortStrangleTest,
+  OTMShortStrangleVix,
 } = require('../controllers/StrangleController');
 
 const router = express.Router();
 
 router.route('/otm-strangle').post(OTMShortStrangle);
-router.route('/otm-strangle-test').post(OTMShortStrangleTest);
+router.route('/otm-strangle-vix').post(OTMShortStrangleVix);
 router.route('/create-otm-strangle').post(createOTMShortStrangleNSL);
 router
   .route('/otm-strangle-multi-expiry')
