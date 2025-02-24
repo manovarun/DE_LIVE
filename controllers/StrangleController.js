@@ -1391,13 +1391,14 @@ exports.createOTMShortStrangleNSL = expressAsyncHandler(
         toDate,
         expiries,
         lotSize,
-        entryTimes, // Array of entry times
-        exitTimes, // Array of exit times
-        otmOffset = 0, // Default to 0 for ATM calculation
-        wingWidth = 500, // Default to 0 for No Hedging
+        entryTimes,
+        exitTimes,
+        otmOffset = 0,
+        wingWidth = 500, // Hedge is always active now
         stockSymbol,
         stockName,
         searchType,
+        enableWeekdayCheck = false,
         selectedWeekdays = [],
       } = req.body;
 
@@ -1461,28 +1462,27 @@ exports.createOTMShortStrangleNSL = expressAsyncHandler(
           ) {
             const date = currentDate.format('YYYY-MM-DD');
 
-            const dayOfWeek = currentDate.format('ddd').toUpperCase(); // Get the day in uppercase (e.g., "MON", "TUE")
+            if (enableWeekdayCheck) {
+              const dayOfWeek = currentDate.format('ddd').toUpperCase();
+              if (
+                selectedWeekdays.length > 0 &&
+                !selectedWeekdays.includes(dayOfWeek)
+              ) {
+                console.log(
+                  `Skipping ${date} (${dayOfWeek}), not in selected weekdays: ${selectedWeekdays}`
+                );
+                continue;
+              }
 
-            // ✅ Apply weekday filtering
-            if (
-              selectedWeekdays.length > 0 &&
-              !selectedWeekdays.includes(dayOfWeek)
-            ) {
               console.log(
-                `Skipping ${date} (${dayOfWeek}), not in selected weekdays: ${selectedWeekdays}`
+                `Processing date: ${date} (${dayOfWeek}) for entry: ${entryTime} and exit: ${exitTime}`
               );
-              continue;
             }
 
-            console.log(
-              `Processing date: ${date} (${dayOfWeek}) for entry: ${entryTime} and exit: ${exitTime}`
-            );
-
-            // 📌 Select the correct expiry based on the current date
             const activeExpiry =
               expiries.find((exp) =>
                 moment(date).isSameOrBefore(moment(exp.validUntil))
-              ) || expiries[expiries.length - 1]; // Use last expiry as fallback
+              ) || expiries[expiries.length - 1];
 
             if (!activeExpiry) {
               console.warn(
@@ -1526,7 +1526,6 @@ exports.createOTMShortStrangleNSL = expressAsyncHandler(
 
               const spotPrice = spotData.close;
               const strikePriceInterval = stockSymbol === 'Nifty 50' ? 50 : 100;
-
               const nearestStrikePrice =
                 Math.round(spotPrice / strikePriceInterval) *
                 strikePriceInterval;
@@ -1534,7 +1533,11 @@ exports.createOTMShortStrangleNSL = expressAsyncHandler(
               const otmCEStrikePrice = nearestStrikePrice + otmOffset;
               const otmPEStrikePrice = nearestStrikePrice - otmOffset;
 
-              let entryOptions = await HistoricalOptionData.find({
+              // Hedge is always active
+              const hedgeCEStrikePrice = otmCEStrikePrice + wingWidth;
+              const hedgePEStrikePrice = otmPEStrikePrice - wingWidth;
+
+              const entryOptions = await HistoricalOptionData.find({
                 timeInterval,
                 datetime: entryTimeStr,
                 expiry,
@@ -1542,28 +1545,10 @@ exports.createOTMShortStrangleNSL = expressAsyncHandler(
                 $or: [
                   { strikePrice: otmCEStrikePrice, optionType: 'CE' },
                   { strikePrice: otmPEStrikePrice, optionType: 'PE' },
+                  { strikePrice: hedgeCEStrikePrice, optionType: 'CE' },
+                  { strikePrice: hedgePEStrikePrice, optionType: 'PE' },
                 ],
               });
-
-              let hedgeCEStrikePrice, hedgePEStrikePrice, hedgeOptions;
-
-              if (wingWidth > 0) {
-                hedgeCEStrikePrice = otmCEStrikePrice + wingWidth;
-                hedgePEStrikePrice = otmPEStrikePrice - wingWidth;
-
-                hedgeOptions = await HistoricalOptionData.find({
-                  timeInterval,
-                  datetime: entryTimeStr,
-                  expiry,
-                  stockName,
-                  $or: [
-                    { strikePrice: hedgeCEStrikePrice, optionType: 'CE' },
-                    { strikePrice: hedgePEStrikePrice, optionType: 'PE' },
-                  ],
-                });
-
-                entryOptions = entryOptions.concat(hedgeOptions);
-              }
 
               const callOptionShort = entryOptions.find(
                 (opt) =>
@@ -1577,27 +1562,23 @@ exports.createOTMShortStrangleNSL = expressAsyncHandler(
                   opt.strikePrice === otmPEStrikePrice
               );
 
-              const callOptionBuy =
-                wingWidth > 0
-                  ? entryOptions.find(
-                      (opt) =>
-                        opt.optionType === 'CE' &&
-                        opt.strikePrice === otmCEStrikePrice + wingWidth
-                    )
-                  : null;
-              const putOptionBuy =
-                wingWidth > 0
-                  ? entryOptions.find(
-                      (opt) =>
-                        opt.optionType === 'PE' &&
-                        opt.strikePrice === otmPEStrikePrice - wingWidth
-                    )
-                  : null;
+              const callOptionBuy = entryOptions.find(
+                (opt) =>
+                  opt.optionType === 'CE' &&
+                  opt.strikePrice === hedgeCEStrikePrice
+              );
+
+              const putOptionBuy = entryOptions.find(
+                (opt) =>
+                  opt.optionType === 'PE' &&
+                  opt.strikePrice === hedgePEStrikePrice
+              );
 
               if (
                 !callOptionShort ||
                 !putOptionShort ||
-                (wingWidth > 0 && (!callOptionBuy || !putOptionBuy))
+                !callOptionBuy ||
+                !putOptionBuy
               ) {
                 console.warn(`Option data missing for ${date}. Skipping.`);
                 continue;
@@ -1605,6 +1586,8 @@ exports.createOTMShortStrangleNSL = expressAsyncHandler(
 
               const ceEntryPrice = callOptionShort.close;
               const peEntryPrice = putOptionShort.close;
+              const ceHedgeEntryPrice = callOptionBuy.close;
+              const peHedgeEntryPrice = putOptionBuy.close;
 
               // 🟢 Fetch Exit Prices for the main short legs
               const ceExitData = await HistoricalOptionData.find({
@@ -1614,7 +1597,7 @@ exports.createOTMShortStrangleNSL = expressAsyncHandler(
                 stockName,
                 optionType: 'CE',
                 datetime: { $gte: entryTimeStr, $lte: exitTimeStr },
-              }).sort({ datetime: 1 });
+              }).sort({ datetime: -1 });
 
               const peExitData = await HistoricalOptionData.find({
                 timeInterval,
@@ -1623,68 +1606,48 @@ exports.createOTMShortStrangleNSL = expressAsyncHandler(
                 stockName,
                 optionType: 'PE',
                 datetime: { $gte: entryTimeStr, $lte: exitTimeStr },
-              }).sort({ datetime: 1 });
+              }).sort({ datetime: -1 });
 
-              let ceExitPrice = ceEntryPrice;
-              let peExitPrice = peEntryPrice;
+              const hedgeCeExitData = await HistoricalOptionData.find({
+                timeInterval,
+                strikePrice: hedgeCEStrikePrice,
+                expiry,
+                stockName,
+                optionType: 'CE',
+                datetime: { $gte: entryTimeStr, $lte: exitTimeStr },
+              }).sort({ datetime: -1 });
 
-              let ceExitTime = exitTimeIST.format('YYYY-MM-DD HH:mm:ss');
-              let peExitTime = exitTimeIST.format('YYYY-MM-DD HH:mm:ss');
+              const hedgePeExitData = await HistoricalOptionData.find({
+                timeInterval,
+                strikePrice: hedgePEStrikePrice,
+                expiry,
+                stockName,
+                optionType: 'PE',
+                datetime: { $gte: entryTimeStr, $lte: exitTimeStr },
+              }).sort({ datetime: -1 });
 
-              // 🔹 Profit/Loss for Short Legs (Sold options)
+              const ceExitPrice =
+                ceExitData.length > 0 ? ceExitData[0].close : ceEntryPrice;
+              const peExitPrice =
+                peExitData.length > 0 ? peExitData[0].close : peEntryPrice;
+
+              const hedgeCeExitPrice =
+                hedgeCeExitData.length > 0
+                  ? hedgeCeExitData[0].close
+                  : ceHedgeEntryPrice;
+              const hedgePeExitPrice =
+                hedgePeExitData.length > 0
+                  ? hedgePeExitData[0].close
+                  : peHedgeEntryPrice;
+
+              // Calculate Profit/Loss
               const ceProfitLoss = (ceEntryPrice - ceExitPrice) * lotSize;
               const peProfitLoss = (peEntryPrice - peExitPrice) * lotSize;
+              const hedgeCeProfitLoss =
+                (hedgeCeExitPrice - ceHedgeEntryPrice) * lotSize;
+              const hedgePeProfitLoss =
+                (hedgePeExitPrice - peHedgeEntryPrice) * lotSize;
 
-              let hedgeCeProfitLoss = 0,
-                hedgePeProfitLoss = 0,
-                ceHedgeEntryPrice = 0,
-                peHedgeEntryPrice = 0,
-                hedgeCeExitPrice = 0,
-                hedgePeExitPrice = 0;
-
-              if (wingWidth > 0) {
-                // 🟢 Fetch Exit Prices for the Hedge Legs
-                const hedgeCeExitData = await HistoricalOptionData.find({
-                  timeInterval,
-                  strikePrice: hedgeCEStrikePrice,
-                  expiry,
-                  stockName,
-                  optionType: 'CE',
-                  datetime: { $gte: entryTimeStr, $lte: exitTimeStr },
-                }).sort({ datetime: -1 });
-
-                const hedgePeExitData = await HistoricalOptionData.find({
-                  timeInterval,
-                  strikePrice: hedgePEStrikePrice,
-                  expiry,
-                  stockName,
-                  optionType: 'PE',
-                  datetime: { $gte: entryTimeStr, $lte: exitTimeStr },
-                }).sort({ datetime: -1 });
-
-                // Ensure callOptionBuy and putOptionBuy are defined
-                ceHedgeEntryPrice = callOptionBuy ? callOptionBuy.close : 0;
-                peHedgeEntryPrice = putOptionBuy ? putOptionBuy.close : 0;
-
-                // Get hedge exit prices (fallback to entry price if missing)
-                hedgeCeExitPrice =
-                  hedgeCeExitData.length > 0
-                    ? hedgeCeExitData[0].close
-                    : ceHedgeEntryPrice;
-
-                hedgePeExitPrice =
-                  hedgePeExitData.length > 0
-                    ? hedgePeExitData[0].close
-                    : peHedgeEntryPrice;
-
-                // 🔹 Profit/Loss for Hedge Legs (Bought options)
-                hedgeCeProfitLoss =
-                  (hedgeCeExitPrice - ceHedgeEntryPrice) * lotSize;
-                hedgePeProfitLoss =
-                  (hedgePeExitPrice - peHedgeEntryPrice) * lotSize;
-              }
-
-              // 🔹 Net Profit Calculation (Add hedge legs profit/loss only if wingWidth > 0)
               const totalProfitLoss =
                 ceProfitLoss +
                 peProfitLoss +
@@ -1692,8 +1655,6 @@ exports.createOTMShortStrangleNSL = expressAsyncHandler(
                 hedgePeProfitLoss;
 
               overallCumulativeProfit += totalProfitLoss;
-
-              // Track Max Profit and Max Loss
               maxProfit = Math.max(maxProfit, totalProfitLoss);
               maxLoss = Math.min(maxLoss, totalProfitLoss);
 
@@ -1709,10 +1670,9 @@ exports.createOTMShortStrangleNSL = expressAsyncHandler(
                 {
                   date,
                   entryTime: entryTimeIST.format('YYYY-MM-DD HH:mm:ss'),
-                  exitTime: ceExitTime,
+                  exitTime: exitTimeIST.format('YYYY-MM-DD HH:mm:ss'),
                   type: 'CE',
-                  strikePrice: nearestStrikePrice,
-                  otmStrikePrice: otmCEStrikePrice,
+                  strikePrice: otmCEStrikePrice,
                   qty: lotSize,
                   entryPrice: ceEntryPrice,
                   exitPrice: ceExitPrice,
@@ -1722,49 +1682,40 @@ exports.createOTMShortStrangleNSL = expressAsyncHandler(
                 {
                   date,
                   entryTime: entryTimeIST.format('YYYY-MM-DD HH:mm:ss'),
-                  exitTime: peExitTime,
+                  exitTime: exitTimeIST.format('YYYY-MM-DD HH:mm:ss'),
                   type: 'PE',
-                  strikePrice: nearestStrikePrice,
-                  otmStrikePrice: otmPEStrikePrice,
+                  strikePrice: otmPEStrikePrice,
                   qty: lotSize,
                   entryPrice: peEntryPrice,
                   exitPrice: peExitPrice,
                   vix: vixValue,
                   profitLoss: peProfitLoss,
                 },
+                {
+                  date,
+                  entryTime: entryTimeIST.format('YYYY-MM-DD HH:mm:ss'),
+                  exitTime: exitTimeIST.format('YYYY-MM-DD HH:mm:ss'),
+                  type: 'CE',
+                  strikePrice: hedgeCEStrikePrice,
+                  qty: lotSize,
+                  entryPrice: ceHedgeEntryPrice,
+                  exitPrice: hedgeCeExitPrice,
+                  vix: vixValue,
+                  profitLoss: hedgeCeProfitLoss,
+                },
+                {
+                  date,
+                  entryTime: entryTimeIST.format('YYYY-MM-DD HH:mm:ss'),
+                  exitTime: exitTimeIST.format('YYYY-MM-DD HH:mm:ss'),
+                  type: 'PE',
+                  strikePrice: hedgePEStrikePrice,
+                  qty: lotSize,
+                  entryPrice: peHedgeEntryPrice,
+                  exitPrice: hedgePeExitPrice,
+                  vix: vixValue,
+                  profitLoss: hedgePeProfitLoss,
+                },
               ];
-
-              if (wingWidth > 0) {
-                // 🛑 If wingWidth > 0, add hedge legs
-                transactions.push(
-                  {
-                    date,
-                    entryTime: entryTimeIST.format('YYYY-MM-DD HH:mm:ss'),
-                    exitTime: exitTimeIST.format('YYYY-MM-DD HH:mm:ss'),
-                    type: 'CE',
-                    strikePrice: nearestStrikePrice,
-                    otmStrikePrice: hedgeCEStrikePrice,
-                    qty: lotSize,
-                    entryPrice: ceHedgeEntryPrice,
-                    exitPrice: hedgeCeExitPrice,
-                    vix: vixValue,
-                    profitLoss: hedgeCeProfitLoss,
-                  },
-                  {
-                    date,
-                    entryTime: entryTimeIST.format('YYYY-MM-DD HH:mm:ss'),
-                    exitTime: exitTimeIST.format('YYYY-MM-DD HH:mm:ss'),
-                    type: 'PE',
-                    strikePrice: nearestStrikePrice,
-                    otmStrikePrice: hedgePEStrikePrice,
-                    qty: lotSize,
-                    entryPrice: peHedgeEntryPrice,
-                    exitPrice: hedgePeExitPrice,
-                    vix: vixValue,
-                    profitLoss: hedgePeProfitLoss,
-                  }
-                );
-              }
 
               results.push({
                 date,
@@ -1772,11 +1723,19 @@ exports.createOTMShortStrangleNSL = expressAsyncHandler(
                 strikePrice: nearestStrikePrice,
                 expiry,
                 lotSize,
-                entryPrice: ceEntryPrice + peEntryPrice,
-                exitPrice: ceExitPrice + peExitPrice,
+                entryPrice:
+                  ceEntryPrice +
+                  peEntryPrice +
+                  ceHedgeEntryPrice +
+                  peHedgeEntryPrice,
+                exitPrice:
+                  ceExitPrice +
+                  peExitPrice +
+                  hedgeCeExitPrice +
+                  hedgePeExitPrice,
                 profitLoss: totalProfitLoss,
                 cumulativeProfit: overallCumulativeProfit,
-                transactions, // ✅ This dynamically contains only relevant legs
+                transactions,
               });
             } catch (error) {
               console.error(
@@ -1785,8 +1744,8 @@ exports.createOTMShortStrangleNSL = expressAsyncHandler(
               );
             }
 
-            totalTradeDays = results.length;
-            noOfProfitableDays = results.filter(
+            const totalTradeDays = results.length;
+            const noOfProfitableDays = results.filter(
               (day) => day.profitLoss > 0
             ).length;
 
@@ -1810,22 +1769,17 @@ exports.createOTMShortStrangleNSL = expressAsyncHandler(
             };
 
             allResults.push(strategy);
-
-            await ShortStrangleStrategy.updateOne(
-              { strategyId },
-              { $set: strategy },
-              { upsert: true }
-            );
           }
         }
       }
 
       res.status(200).json({
+        allResults,
         status: 'success',
       });
     } catch (error) {
       console.error(
-        'Error creating multi-day OTM short strangle with multiple entries and exits:',
+        'Error creating OTM short strangle with hedge:',
         error.message
       );
       next(error);

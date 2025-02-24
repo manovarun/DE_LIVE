@@ -19,8 +19,6 @@ router
 router
   .route('/otm-strangle-multi-expiry-stoploss')
   .post(createOTMShortStrangleMultiExpiryStopLoss);
-router
-  .route('/otm-strangle-iron-condor')
-  .post(createOTMShortStrangleMultiDayMultiExitStrikeIronCondor);
+router.route('/otm-strangle-iron-condor').post(createOTMShortStrangleNSL);
 
 module.exports = router;
