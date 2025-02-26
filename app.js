@@ -13,6 +13,7 @@ const straddleRouter = require('./routes/straddle');
 const strangleRouter = require('./routes/strangle');
 const socketRouter = require('./routes/socket');
 const shortRouter = require('./routes/short');
+const longRouter = require('./routes/long');
 
 const app = express();
 
@@ -30,6 +31,7 @@ app.use('/api/straddle', straddleRouter);
 app.use('/api/strangle', strangleRouter);
 app.use('/api/socket', socketRouter);
 app.use('/api/short', shortRouter);
+app.use('/api/long', longRouter);
 
 app.use(GlobalErrorHandler);
 

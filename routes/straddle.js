@@ -20,9 +20,6 @@ const {
   gridSearchAndSaveShortStraddleStrikeAdjust,
   createOTMIronCondorMultiDayMultiExitStrike,
 } = require('../controllers/StraddleController');
-const {
-  gridSearchAndSaveLongStraddleStrike,
-} = require('../controllers/LongStraddleController');
 
 const router = express.Router();
 
@@ -59,11 +56,6 @@ router
 router
   .route('/tsl-straddle-multi-grid-strike-save')
   .post(TslGridSearchAndSaveShortStraddleStrike);
-
-//LONG STRADDLE
-router
-  .route('/long-straddle-multi-grid-strike-save')
-  .post(gridSearchAndSaveLongStraddleStrike);
 
 //VIX CONDITION
 router.route('/vix-straddle').post(createShortStraddle);
