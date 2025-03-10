@@ -1,6 +1,6 @@
 const mongoose = require('mongoose');
 
-const MarketDataSchema = new mongoose.Schema({
+const MarketDataSchemaTest = new mongoose.Schema({
   exchange: { type: String, required: true }, // Exchange (NSE, BSE, etc.)
   tradingSymbol: { type: String, required: true }, // Symbol Name (e.g., Nifty Bank)
   symbolToken: { type: String, required: true }, // Unique token ID
@@ -42,6 +42,6 @@ const MarketDataSchema = new mongoose.Schema({
   timestamp: { type: String },
 });
 
-const MarketData = mongoose.model('MarketData', MarketDataSchema);
+const MarketDataTest = mongoose.model('MarketDataTest', MarketDataSchemaTest);
 
-module.exports = MarketData;
+module.exports = MarketDataTest;

@@ -213,7 +213,7 @@ exports.createFirstCandleStrategy = expressAsyncHandler(
                 break;
               } else if (
                 tradeDirection === 'Short' &&
-                (candle.close <= target || candle.close >= stopLoss)
+                (candle.close >= target || candle.close <= stopLoss)
               ) {
                 exitPrice = candle.close;
                 exitTimeFinal = candle.datetime;
