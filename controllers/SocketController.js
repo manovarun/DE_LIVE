@@ -292,7 +292,7 @@ cron.schedule(
 
 // 🕙 Step 4: Schedule Stop at 10:00 AM IST
 cron.schedule(
-  '0 11 * * *',
+  '0 10 * * *',
   () => {
     stopMarketDataSaving();
   },
