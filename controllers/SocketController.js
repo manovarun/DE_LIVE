@@ -266,7 +266,7 @@ const saveMarketDataPeriodically = () => {
     } catch (error) {
       console.error('Error auto-saving market data:', error);
     }
-  }, 3000); // Run every 5 seconds
+  }, 5000); // Run every 5 seconds
 };
 
 // Stop Saving Data
@@ -280,7 +280,7 @@ const stopMarketDataSaving = () => {
 
 // 🕘 Step 3: Schedule Start at 9:15 AM IST
 cron.schedule(
-  '15 9 * * *',
+  '30 29 11 * * *',
   () => {
     console.log('🚀 Starting market data auto-saving at 9:15 AM IST');
     saveMarketDataPeriodically();
@@ -292,7 +292,7 @@ cron.schedule(
 
 // 🕙 Step 4: Schedule Stop at 10:00 AM IST
 cron.schedule(
-  '0 10 * * *',
+  '30 30 12 * * *',
   () => {
     stopMarketDataSaving();
   },
