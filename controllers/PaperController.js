@@ -194,7 +194,7 @@ cron.schedule(
 
 // Start Paper Trade
 cron.schedule(
-  '05 18 09 * * 1-5',
+  '05 16 09 * * 1-5',
   () => {
     console.log('🚀 Starting Paper Trading Engine');
     intervalRef = setInterval(runLiveBreakoutFromBacktestStrategy, 5000);
