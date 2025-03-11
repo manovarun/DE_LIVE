@@ -251,3 +251,35 @@ exports.getLiveNSEMarketData = expressAsyncHandler(async (req, res, next) => {
     next(new AppError('Failed to retrieve and store live market data', 500));
   }
 });
+
+// // ⏱️ Start storing data at 9:15 AM IST
+// cron.schedule(
+//   '30 18 11 * * 1-5',
+//   () => {
+//     console.log('📊 Starting Live Market Data Capture...');
+//     marketDataInterval = setInterval(async () => {
+//       try {
+//         await exports.getLiveNSEMarketData(
+//           {},
+//           { status: () => ({ json: () => {} }) },
+//           () => {}
+//         );
+//       } catch (err) {
+//         console.error('❌ Error in getLiveNSEMarketData:', err.message);
+//       }
+//     }, 5000);
+//   },
+//   { timezone: 'Asia/Kolkata' }
+// );
+
+// // ⏹️ Stop storing data at 10:00 AM IST
+// cron.schedule(
+//   '30 15 * * 1-5',
+//   () => {
+//     if (marketDataInterval) {
+//       clearInterval(marketDataInterval);
+//       console.log('🛑 Stopped Live Market Data Capture');
+//     }
+//   },
+//   { timezone: 'Asia/Kolkata' }
+// );

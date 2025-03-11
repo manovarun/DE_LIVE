@@ -4,10 +4,11 @@ const MarketData = require('../models/Socket');
 const InstrumentData = require('../models/Instrument');
 const cron = require('node-cron');
 const { getLiveNSEMarketData } = require('./SocketController');
+const PaperTradeLog = require('../models/PaperTrade');
 
 let paperTrade = null;
 
-const breakoutBuffer = 10;
+const breakoutBuffer = 25;
 const stopLossMultiplier = 5;
 const targetMultiplier = 4;
 const lotSize = 30;
@@ -18,7 +19,7 @@ const runLiveBreakoutFromBacktestStrategy = async () => {
   const dateStr = moment().format('YYYY-MM-DD');
 
   // Step 1: Fetch First Candle (09:15–09:18)
-  const candleStart = moment.tz(`${dateStr} 09:15:00`, 'Asia/Kolkata');
+  const candleStart = moment.tz(`${dateStr} 15:00:00`, 'Asia/Kolkata');
   const candleEnd = candleStart.clone().add(1, 'minute');
 
   const firstCandleAgg = await MarketData.aggregate([
@@ -47,7 +48,7 @@ const runLiveBreakoutFromBacktestStrategy = async () => {
   if (!firstCandleAgg.length) return console.log('❌ First Candle Missing');
   const firstCandle = firstCandleAgg[0];
 
-  console.log('✅ First 3-minute Candle:', firstCandle);
+  console.log('✅ First 1-minute Candle:', firstCandle);
 
   const breakoutHigh = firstCandle.high + breakoutBuffer;
   const breakoutLow = firstCandle.low - breakoutBuffer;
@@ -113,12 +114,19 @@ const runLiveBreakoutFromBacktestStrategy = async () => {
     // 📌 Target is calculated as percentage above entryPrice (e.g., 2% if targetMultiplier=2)
     const target = entryPrice * (1 + targetMultiplier / 100);
 
+    const rrRatio = (target - entryPrice) / (entryPrice - stopLoss);
+
     paperTrade = {
       direction,
       tradingSymbol: optionToken.symbol,
+      symbolToken: optionToken.token,
+      nearestStrike,
+      selectedOptionType,
+      expiry: selectedExpiry,
       entryPrice,
       stopLoss,
       target,
+      rrRatio,
       entryTime: latestTick.exchFeedTime,
       lotSize,
       status: 'OPEN',
@@ -130,71 +138,57 @@ const runLiveBreakoutFromBacktestStrategy = async () => {
   // Step 4: Monitor Exit
   if (paperTrade && paperTrade.status === 'OPEN') {
     const latestOptionTick = await MarketData.findOne({
-      symbolToken: paperTrade.tradingSymbol,
+      symbolToken: paperTrade.symbolToken,
     })
       .sort({ exchFeedTime: -1 })
       .lean();
 
     console.log('latestOptionTick: ', latestOptionTick);
 
-    if (!latestOptionTick) return;
+    if (!latestOptionTick) {
+      console.warn(
+        `⚠️ No tick data found for token: ${paperTrade.symbolToken}`
+      );
+      return;
+    }
 
     const price = latestOptionTick.ltp;
+    let exitReason = '';
 
-    const exitCondition =
-      price >= paperTrade.target || price <= paperTrade.stopLoss;
+    if (price >= paperTrade.target) {
+      exitReason = 'Target Hit';
+    } else if (price <= paperTrade.stopLoss) {
+      exitReason = 'Stop Loss Triggered';
+    }
 
-    if (exitCondition) {
+    const nowTime = moment().tz('Asia/Kolkata');
+    const maxExitTime = moment.tz(`${dateStr} 15:15:00`, 'Asia/Kolkata');
+
+    if (!exitReason && nowTime.isSameOrAfter(maxExitTime)) {
+      exitReason = 'Time Exit';
+    }
+
+    if (exitReason) {
       paperTrade.status = 'CLOSED';
       paperTrade.exitPrice = price;
       paperTrade.exitTime = latestOptionTick.exchFeedTime;
+      paperTrade.exitReason = exitReason;
       paperTrade.pnl =
         (paperTrade.exitPrice - paperTrade.entryPrice) * paperTrade.lotSize;
 
       console.log('✅ Paper Trade Closed:', paperTrade);
+
+      await PaperTradeLog.create({ ...paperTrade });
+      paperTrade = null;
     }
   }
 };
 
-let marketDataInterval = null;
-
 let intervalRef = null;
-
-// ⏱️ Start storing data at 9:15 AM IST
-cron.schedule(
-  '50 14 09 * * 1-5',
-  () => {
-    console.log('📊 Starting Live Market Data Capture...');
-    marketDataInterval = setInterval(async () => {
-      try {
-        await getLiveNSEMarketData(
-          {},
-          { status: () => ({ json: () => {} }) },
-          () => {}
-        );
-      } catch (err) {
-        console.error('❌ Error in getLiveNSEMarketData:', err.message);
-      }
-    }, 5000);
-  },
-  { timezone: 'Asia/Kolkata' }
-);
-
-// ⏹️ Stop storing data at 10:00 AM IST
-cron.schedule(
-  '30 15 * * 1-5',
-  () => {
-    if (marketDataInterval) {
-      clearInterval(marketDataInterval);
-      console.log('🛑 Stopped Live Market Data Capture');
-    }
-  },
-  { timezone: 'Asia/Kolkata' }
-);
 
 // Start Paper Trade
 cron.schedule(
-  '05 16 09 * * 1-5',
+  '05 01 15 * * 1-5',
   () => {
     console.log('🚀 Starting Paper Trading Engine');
     intervalRef = setInterval(runLiveBreakoutFromBacktestStrategy, 5000);
@@ -204,7 +198,7 @@ cron.schedule(
 
 // 🕙 Stop  at 10:00:00 IST
 cron.schedule(
-  '0 10 * * 1-5',
+  '05 15 15 * * 1-5',
   () => {
     console.log('🛑 Stopping Paper Trading Engine');
     if (intervalRef) clearInterval(intervalRef);
