@@ -10,8 +10,8 @@ const MarketDataSchema = new mongoose.Schema({
   low: { type: Number, required: true }, // Daily Low
   close: { type: Number, required: true }, // Previous Close
   lastTradeQty: { type: Number, required: true }, // Last Trade Quantity
-  exchTradeTime: { type: Date }, // Exchange Feed Timestamp
-  exchTradeTime: { type: Date }, // Trade Timestamp
+  exchFeedTime: { type: String, required: true }, // Exchange Feed Timestamp
+  exchTradeTime: { type: String, required: true }, // Trade Timestamp
   netChange: { type: Number, required: true }, // Net Change in Price
   percentChange: { type: Number, required: true }, // % Change in Price
   avgPrice: { type: Number, required: true }, // Average Price
