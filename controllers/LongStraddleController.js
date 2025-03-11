@@ -185,6 +185,9 @@ exports.createFirstCandleStrategy = expressAsyncHandler(
 
           const stopLoss = entryPrice * (1 - stopLossMultiplier / 100);
           const target = entryPrice * (1 + targetMultiplier / 100);
+          const rrRatio = (target - entryPrice) / (entryPrice - stopLoss);
+
+          console.log(1 - stopLossMultiplier / 100);
 
           console.log('stopLoss: ', stopLoss);
           console.log('target: ', target);
@@ -201,22 +204,18 @@ exports.createFirstCandleStrategy = expressAsyncHandler(
             .sort({ datetime: 1 })
             .lean();
 
+          let exitReason = 'Time Exit';
           for (const candle of exitData) {
-            console.log(candle);
             if (candle.datetime !== entryTime) {
-              if (
-                tradeDirection === 'Long' &&
-                (candle.close >= target || candle.close <= stopLoss)
-              ) {
+              if (candle.close >= target) {
                 exitPrice = candle.close;
                 exitTimeFinal = candle.datetime;
+                exitReason = 'Target Hit';
                 break;
-              } else if (
-                tradeDirection === 'Short' &&
-                (candle.close >= target || candle.close <= stopLoss)
-              ) {
+              } else if (candle.close <= stopLoss) {
                 exitPrice = candle.close;
                 exitTimeFinal = candle.datetime;
+                exitReason = 'Stop Loss Hit';
                 break;
               }
             }
@@ -230,6 +229,10 @@ exports.createFirstCandleStrategy = expressAsyncHandler(
           if (entryTime === exitTimeFinal) continue;
 
           profitLoss = (exitPrice - entryPrice) * lotSize;
+
+          const capitalUsed = entryPrice * lotSize;
+          const roi = (profitLoss / capitalUsed) * 100;
+
           cumulativeProfit += profitLoss;
           totalTrades++;
           if (profitLoss > 0) profitableTrades++;
@@ -239,18 +242,25 @@ exports.createFirstCandleStrategy = expressAsyncHandler(
             stockSymbol,
             tradeDirection,
             nearestStrike,
+            selectedOptionType,
             entryPrice,
             exitPrice,
             profitLoss,
             stopLoss,
             target,
+            rrRatio,
             entryTime,
             exitTime: exitTimeFinal,
+            exitReason,
+            capitalUsed,
+            roi: roi.toFixed(2) + '%',
           });
         } catch (error) {
           console.error(`Error processing ${date}:`, error.message);
         }
       }
+
+      const winRate = ((profitableTrades / totalTrades) * 100).toFixed(2);
 
       res.status(200).json({
         status: 'success',
@@ -258,6 +268,7 @@ exports.createFirstCandleStrategy = expressAsyncHandler(
         cumulativeProfit,
         totalTrades,
         profitableTrades,
+        winRate: winRate + '%',
       });
     } catch (error) {
       console.error('Error creating first candle strategy:', error.message);
