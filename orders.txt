@@ -1,0 +1,52 @@
+Price must be 0 for MARKET order
+
+const orderPayload = {
+      variety: 'NORMAL',
+      tradingsymbol: 'CANBK-EQ',
+      symboltoken: '10794',
+      transactiontype: 'BUY',
+      exchange: 'NSE',
+      ordertype: 'MARKET',
+      producttype: 'DELIVERY',
+      duration: 'DAY',
+      price: '0', // Price must be 0 for MARKET order
+      squareoff: '0',
+      stoploss: '0',
+      quantity: '1',
+    };
+
+
+{
+    "success": true,
+    "data": {
+        "status": true,
+        "message": "SUCCESS",
+        "errorcode": "",
+        "data": {
+            "script": "CANBK-EQ",
+            "orderid": "250312000823740",
+            "uniqueorderid": "c7f5a87f-5ac3-42cd-b5e1-d40f7484a23a"
+        }
+    }
+}
+
+
+http://localhost:9000/api/order/cancelorder
+
+{
+  "variety":"NORMAL",
+  "orderid":"031282a6abdfAO"
+}
+
+{
+  "variety":"NORMAL",
+  "orderid":"03127aebf080AO",
+  "ordertype":"LIMIT",
+  "producttype":"INTRADAY",
+  "duration":"DAY",
+  "price":"194.00",
+  "quantity":"1",
+  "tradingsymbol":"SBIN-EQ",
+  "symboltoken":"3045",
+  "exchange":"NSE"
+}

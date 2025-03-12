@@ -77,6 +77,9 @@ const PaperTradeLogSchema = new mongoose.Schema(
       enum: ['OPEN', 'CLOSED'],
       default: 'OPEN',
     },
+    timestamp: {
+      type: String,
+    },
   },
   { timestamps: true }
 );

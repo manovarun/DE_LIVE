@@ -111,6 +111,10 @@ const simulatePaperTradingFromTickData = async (startTimeStr, endTimeStr) => {
       const target = +(entryPrice * (1 + targetMultiplier / 100)).toFixed(2);
       const rrRatio = (target - entryPrice) / (entryPrice - stopLoss);
 
+      const convertToISTDate = (date) => {
+        return moment.tz(date, 'Asia/Kolkata').format('YYYY-MM-DDTHH:mm:ssZ'); // Returns ISO string with IST offset
+      };
+
       paperTrade = {
         date: moment().tz('Asia/Kolkata').format('YYYY-MM-DD'),
         firstCandleMinute,
@@ -127,6 +131,7 @@ const simulatePaperTradingFromTickData = async (startTimeStr, endTimeStr) => {
         entryTime: tick.exchFeedTime,
         lotSize,
         status: 'OPEN',
+        timestamp: convertToISTDate(new Date()),
       };
 
       console.log('📌 Simulated Paper Trade Entered:', paperTrade);
