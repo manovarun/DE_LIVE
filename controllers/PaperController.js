@@ -8,19 +8,20 @@ const PaperTradeLog = require('../models/PaperTrade');
 
 let paperTrade = null;
 
-const breakoutBuffer = 25;
-const stopLossMultiplier = 5;
-const targetMultiplier = 4;
+const breakoutBuffer = 13;
+const stopLossMultiplier = 20;
+const targetMultiplier = 20;
 const lotSize = 30;
 const strikeInterval = 100;
 const optionTimeInterval = 'M1';
+const firstCandleMinute = 5;
 
 const runLiveBreakoutFromBacktestStrategy = async () => {
   const dateStr = moment().format('YYYY-MM-DD');
 
   // Step 1: Fetch First Candle (09:15–09:18)
-  const candleStart = moment.tz(`${dateStr} 15:00:00`, 'Asia/Kolkata');
-  const candleEnd = candleStart.clone().add(1, 'minute');
+  const candleStart = moment.tz(`${dateStr} 09:15:00`, 'Asia/Kolkata');
+  const candleEnd = candleStart.clone().add(firstCandleMinute, 'minute');
 
   const firstCandleAgg = await MarketData.aggregate([
     {
@@ -108,11 +109,8 @@ const runLiveBreakoutFromBacktestStrategy = async () => {
 
     const entryPrice = optionLTP.ltp;
 
-    // 📌 Stop loss is calculated as percentage below entryPrice (e.g., 1.5% if stopLossMultiplier=1.5)
-    const stopLoss = entryPrice * (1 - stopLossMultiplier / 100);
-
-    // 📌 Target is calculated as percentage above entryPrice (e.g., 2% if targetMultiplier=2)
-    const target = entryPrice * (1 + targetMultiplier / 100);
+    const stopLoss = +(entryPrice * (1 - stopLossMultiplier / 100)).toFixed(2);
+    const target = +(entryPrice * (1 + targetMultiplier / 100)).toFixed(2);
 
     const rrRatio = (target - entryPrice) / (entryPrice - stopLoss);
 
@@ -188,7 +186,7 @@ let intervalRef = null;
 
 // Start Paper Trade
 cron.schedule(
-  '05 01 15 * * 1-5',
+  '05 18 09 * * 1-5',
   () => {
     console.log('🚀 Starting Paper Trading Engine');
     intervalRef = setInterval(runLiveBreakoutFromBacktestStrategy, 5000);
@@ -198,7 +196,7 @@ cron.schedule(
 
 // 🕙 Stop  at 10:00:00 IST
 cron.schedule(
-  '05 15 15 * * 1-5',
+  '05 48 09 * * 1-5',
   () => {
     console.log('🛑 Stopping Paper Trading Engine');
     if (intervalRef) clearInterval(intervalRef);

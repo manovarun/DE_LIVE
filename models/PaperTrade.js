@@ -2,6 +2,14 @@ const mongoose = require('mongoose');
 
 const PaperTradeLogSchema = new mongoose.Schema(
   {
+    date: {
+      type: String,
+      required: true,
+    },
+    firstCandleMinute: {
+      type: Number,
+      required: true,
+    },
     direction: {
       type: String,
       enum: ['LONG', 'SHORT'],

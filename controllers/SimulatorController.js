@@ -6,16 +6,17 @@ const PaperTradeLog = require('../models/PaperTrade'); // ✅ Add model for logg
 
 let paperTrade = null;
 
-const breakoutBuffer = 25;
-const stopLossMultiplier = 5;
-const targetMultiplier = 4;
+const breakoutBuffer = 13;
+const stopLossMultiplier = 20;
+const targetMultiplier = 20;
 const lotSize = 30;
 const strikeInterval = 100;
+const firstCandleMinute = 3;
 
 // Simulator Function to Replay from Stored Tick Data
 const simulatePaperTradingFromTickData = async (startTimeStr, endTimeStr) => {
   const candleStart = moment.tz(startTimeStr, 'Asia/Kolkata');
-  const candleEnd = candleStart.clone().add(1, 'minute');
+  const candleEnd = candleStart.clone().add(firstCandleMinute, 'minute');
 
   console.log('candleStart', candleStart);
   console.log('candleEnd', candleEnd);
@@ -46,7 +47,7 @@ const simulatePaperTradingFromTickData = async (startTimeStr, endTimeStr) => {
   if (!firstCandleAgg.length) return console.log('❌ First Candle Missing');
   const firstCandle = firstCandleAgg[0];
 
-  console.log('First 1-minute Candle:', firstCandle);
+  console.log(`First ${firstCandleMinute} minute Candle:`, firstCandle);
 
   const breakoutHigh = firstCandle.high + breakoutBuffer;
   const breakoutLow = firstCandle.low - breakoutBuffer;
@@ -81,6 +82,8 @@ const simulatePaperTradingFromTickData = async (startTimeStr, endTimeStr) => {
       const selectedOptionType = direction === 'LONG' ? 'CE' : 'PE';
       const selectedExpiry = '27MAR2025';
 
+      console.log(nearestStrike);
+
       const optionToken = await InstrumentData.findOne({
         name: 'BANKNIFTY',
         expiry: selectedExpiry,
@@ -102,11 +105,15 @@ const simulatePaperTradingFromTickData = async (startTimeStr, endTimeStr) => {
       if (!optionLTP) continue;
 
       const entryPrice = optionLTP.ltp;
-      const stopLoss = entryPrice * (1 - stopLossMultiplier / 100);
-      const target = entryPrice * (1 + targetMultiplier / 100);
+      const stopLoss = +(entryPrice * (1 - stopLossMultiplier / 100)).toFixed(
+        2
+      );
+      const target = +(entryPrice * (1 + targetMultiplier / 100)).toFixed(2);
       const rrRatio = (target - entryPrice) / (entryPrice - stopLoss);
 
       paperTrade = {
+        date: moment().tz('Asia/Kolkata').format('YYYY-MM-DD'),
+        firstCandleMinute,
         direction,
         tradingSymbol: optionToken.symbol,
         symbolToken: optionToken.token,
@@ -135,7 +142,9 @@ const simulatePaperTradingFromTickData = async (startTimeStr, endTimeStr) => {
 
       const price = optionTick.ltp;
       let exitReason = '';
-
+      console.log(
+        `📡 Monitoring => Tick Time: ${tick.exchFeedTime}, Option Price: ${price}, SL: ${paperTrade.stopLoss}, Target: ${paperTrade.target}`
+      );
       if (price >= paperTrade.target) {
         exitReason = 'Target Hit';
         console.log(`🎯 Target hit at ${tick.exchFeedTime}`);
@@ -166,6 +175,6 @@ const simulatePaperTradingFromTickData = async (startTimeStr, endTimeStr) => {
   }
 };
 
-// simulatePaperTradingFromTickData('2025-03-11 14:28:00', '2025-03-11 15:00:00');
+simulatePaperTradingFromTickData('2025-03-12 09:15:00', '2025-03-12 09:50:00');
 
 module.exports = { simulatePaperTradingFromTickData };

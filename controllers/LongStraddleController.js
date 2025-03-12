@@ -5,11 +5,12 @@ const HistoricalIndicesData = require('../models/Indices');
 const AppError = require('../utils/AppError');
 const { calculateIndicators } = require('../utils/Indicators');
 
+// 📈 Updated First Candle Breakout Backtest Strategy Controller
 exports.createFirstCandleStrategy = expressAsyncHandler(
   async (req, res, next) => {
     try {
       const {
-        timeInterval,
+        timeInterval = 'M3',
         fromDate,
         toDate,
         stockSymbol,
@@ -76,12 +77,10 @@ exports.createFirstCandleStrategy = expressAsyncHandler(
           const breakoutHigh = high + breakoutBuffer;
           const breakoutLow = low - breakoutBuffer;
 
-          // Find the closest expiry date that is still valid
           const expiryObj =
             expiries.find((exp) =>
               moment(date).isSameOrBefore(moment(exp.validUntil))
             ) || expiries[expiries.length - 1];
-
           const expiry = expiryObj.expiry;
 
           console.log(
@@ -99,42 +98,31 @@ exports.createFirstCandleStrategy = expressAsyncHandler(
           const priceData = await HistoricalIndicesData.find({
             stockSymbol,
             stockName,
-            timeInterval,
+            timeInterval: 'M3',
             datetime: { $gte: entryTimeStr, $lt: exitTimeStr },
           })
             .select('datetime close')
             .sort({ datetime: 1 })
             .lean();
 
-          console.log('priceData', priceData);
-
-          if (priceData.length === 0) {
-            console.warn(`No price data found for ${stockSymbol} on ${date}`);
-            continue;
-          }
+          if (priceData.length === 0) continue;
 
           for (const candle of priceData) {
             if (!tradeDirection) {
               if (candle.close >= breakoutHigh) {
                 tradeDirection = 'Long';
                 breakoutTime = candle.datetime;
-                console.log(`Breakout confirmed at ${breakoutTime}`);
                 break;
               } else if (candle.close <= breakoutLow) {
                 tradeDirection = 'Short';
                 breakoutTime = candle.datetime;
-                console.log(`Breakout confirmed at ${breakoutTime}`);
                 break;
               }
             }
           }
 
-          if (!tradeDirection) {
-            console.log(`No breakout occurred for ${stockSymbol} on ${date}`);
-            continue;
-          }
+          if (!tradeDirection) continue;
 
-          // Fetch latest spot price at breakout time to recalculate nearest strike
           const breakoutSpotData = await HistoricalIndicesData.findOne({
             stockSymbol,
             stockName,
@@ -144,22 +132,12 @@ exports.createFirstCandleStrategy = expressAsyncHandler(
             .select('close')
             .lean();
 
-          if (!breakoutSpotData) {
-            console.warn(
-              `No latest spot data found for ${stockSymbol} at breakout time on ${date}`
-            );
-            continue;
-          }
+          if (!breakoutSpotData) continue;
 
           const strikeInterval = 100;
           const nearestStrike =
             Math.round(breakoutSpotData.close / strikeInterval) *
             strikeInterval;
-          console.log(
-            `Recalculated nearest strike at breakout time: ${nearestStrike}`
-          );
-
-          // Fetch ATM Call or Put option based on trade direction
           const selectedOptionType = tradeDirection === 'Long' ? 'CE' : 'PE';
 
           const optionData = await HistoricalOptionData.findOne({
@@ -173,24 +151,21 @@ exports.createFirstCandleStrategy = expressAsyncHandler(
             .select('datetime close strikePrice optionType')
             .lean();
 
-          if (!optionData) {
-            console.warn(
-              `No ${selectedOptionType} option data found for BANKNIFTY at breakout time on ${date}`
-            );
-            continue;
-          }
+          if (!optionData) continue;
 
           entryTime = breakoutTime;
           entryPrice = optionData.close;
-
-          const stopLoss = entryPrice * (1 - stopLossMultiplier / 100);
-          const target = entryPrice * (1 + targetMultiplier / 100);
-          const rrRatio = (target - entryPrice) / (entryPrice - stopLoss);
-
-          console.log(1 - stopLossMultiplier / 100);
-
-          console.log('stopLoss: ', stopLoss);
-          console.log('target: ', target);
+          const stopLoss = +(
+            entryPrice *
+            (1 - stopLossMultiplier / 100)
+          ).toFixed(2);
+          const target = +(entryPrice * (1 + targetMultiplier / 100)).toFixed(
+            2
+          );
+          const rrRatio = +(
+            (target - entryPrice) /
+            (entryPrice - stopLoss)
+          ).toFixed(2);
 
           const exitData = await HistoricalOptionData.find({
             stockName,
@@ -229,7 +204,6 @@ exports.createFirstCandleStrategy = expressAsyncHandler(
           if (entryTime === exitTimeFinal) continue;
 
           profitLoss = (exitPrice - entryPrice) * lotSize;
-
           const capitalUsed = entryPrice * lotSize;
           const roi = (profitLoss / capitalUsed) * 100;
 
