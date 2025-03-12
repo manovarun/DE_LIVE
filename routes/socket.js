@@ -19,4 +19,5 @@ router.route('/websocket').post(getLiveSocketData);
 router.route('/live-nse-market').post(getLiveNSEMarketData);
 router.route('/paper').post(runLiveBreakoutFromBacktestStrategy);
 router.route('/simultor').post(simulatePaperTradingFromTickData);
+
 module.exports = router;

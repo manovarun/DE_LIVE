@@ -11,7 +11,7 @@ const stopLossMultiplier = 20;
 const targetMultiplier = 20;
 const lotSize = 30;
 const strikeInterval = 100;
-const firstCandleMinute = 3;
+const firstCandleMinute = 1;
 
 // Simulator Function to Replay from Stored Tick Data
 const simulatePaperTradingFromTickData = async (startTimeStr, endTimeStr) => {
@@ -142,15 +142,21 @@ const simulatePaperTradingFromTickData = async (startTimeStr, endTimeStr) => {
 
       const price = optionTick.ltp;
       let exitReason = '';
+
       console.log(
-        `📡 Monitoring => Tick Time: ${tick.exchFeedTime}, Option Price: ${price}, SL: ${paperTrade.stopLoss}, Target: ${paperTrade.target}`
+        `🔍 Tick: ${tick.exchFeedTime} | Option Trade Time: ${
+          optionTick.exchTradeTime
+        } | Option Price: ${price.toFixed(2)} | SL: ${
+          paperTrade.stopLoss
+        } | Target: ${paperTrade.target}`
       );
+
       if (price >= paperTrade.target) {
         exitReason = 'Target Hit';
-        console.log(`🎯 Target hit at ${tick.exchFeedTime}`);
+        console.log(`🎯 Target hit at ${optionTick.exchTradeTime}`);
       } else if (price <= paperTrade.stopLoss) {
         exitReason = 'Stop Loss Triggered';
-        console.log(`🛑 Stop loss hit at ${tick.exchFeedTime}`);
+        console.log(`🛑 Stop loss hit at ${optionTick.exchTradeTime}`);
       } else if (
         moment(tick.exchFeedTime).isSameOrAfter(
           moment.tz(endTimeStr, 'Asia/Kolkata')
@@ -162,7 +168,7 @@ const simulatePaperTradingFromTickData = async (startTimeStr, endTimeStr) => {
       if (exitReason || tick === tickData[tickData.length - 1]) {
         paperTrade.status = 'CLOSED';
         paperTrade.exitPrice = price;
-        paperTrade.exitTime = tick.exchFeedTime;
+        paperTrade.exitTime = optionTick.exchTradeTime;
         paperTrade.exitReason = exitReason || 'Session End';
         paperTrade.pnl =
           (paperTrade.exitPrice - paperTrade.entryPrice) * paperTrade.lotSize;
@@ -175,6 +181,6 @@ const simulatePaperTradingFromTickData = async (startTimeStr, endTimeStr) => {
   }
 };
 
-simulatePaperTradingFromTickData('2025-03-12 09:15:00', '2025-03-12 09:50:00');
+// simulatePaperTradingFromTickData('2025-03-12 09:15:00', '2025-03-12 09:50:00');
 
 module.exports = { simulatePaperTradingFromTickData };
