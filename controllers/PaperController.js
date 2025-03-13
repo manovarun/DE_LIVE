@@ -1,10 +1,9 @@
 // 📦 Live Breakout Paper Trade Engine Based on Backtest Strategy Logic
 const moment = require('moment-timezone');
-const MarketData = require('../models/Socket');
 const InstrumentData = require('../models/Instrument');
 const cron = require('node-cron');
-const { getLiveNSEMarketData } = require('./SocketController');
 const PaperTradeLog = require('../models/PaperTrade');
+const MarketData = require('../models/MarketData');
 
 let paperTrade = null;
 
@@ -13,13 +12,12 @@ const stopLossMultiplier = 20;
 const targetMultiplier = 20;
 const lotSize = 30;
 const strikeInterval = 100;
-const optionTimeInterval = 'M1';
-const firstCandleMinute = 5;
+const firstCandleMinute = 1;
 
 const runLiveBreakoutFromBacktestStrategy = async () => {
   const dateStr = moment().format('YYYY-MM-DD');
 
-  // Step 1: Fetch First Candle (09:15–09:18)
+  // Step 1: Fetch First Candle (09:15)
   const candleStart = moment.tz(`${dateStr} 09:15:00`, 'Asia/Kolkata');
   const candleEnd = candleStart.clone().add(firstCandleMinute, 'minute');
 
@@ -186,7 +184,7 @@ let intervalRef = null;
 
 // Start Paper Trade
 cron.schedule(
-  '05 18 09 * * 1-5',
+  '05 16 09 * * 1-5',
   () => {
     console.log('🚀 Starting Paper Trading Engine');
     intervalRef = setInterval(runLiveBreakoutFromBacktestStrategy, 5000);

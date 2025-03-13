@@ -1,8 +1,8 @@
 // 📦 Live Breakout Paper Trade Engine Based on Backtest Strategy Logic
 const moment = require('moment-timezone');
-const MarketData = require('../models/Socket');
 const InstrumentData = require('../models/Instrument');
 const PaperTradeLog = require('../models/PaperTrade'); // ✅ Add model for logging
+const MarketData = require('../models/MarketData');
 
 let paperTrade = null;
 
@@ -111,10 +111,6 @@ const simulatePaperTradingFromTickData = async (startTimeStr, endTimeStr) => {
       const target = +(entryPrice * (1 + targetMultiplier / 100)).toFixed(2);
       const rrRatio = (target - entryPrice) / (entryPrice - stopLoss);
 
-      const convertToISTDate = (date) => {
-        return moment.tz(date, 'Asia/Kolkata').format('YYYY-MM-DDTHH:mm:ssZ'); // Returns ISO string with IST offset
-      };
-
       paperTrade = {
         date: moment().tz('Asia/Kolkata').format('YYYY-MM-DD'),
         firstCandleMinute,
@@ -131,7 +127,6 @@ const simulatePaperTradingFromTickData = async (startTimeStr, endTimeStr) => {
         entryTime: tick.exchFeedTime,
         lotSize,
         status: 'OPEN',
-        timestamp: convertToISTDate(new Date()),
       };
 
       console.log('📌 Simulated Paper Trade Entered:', paperTrade);
