@@ -1,122 +1,9 @@
 // controllers/liveTradeSimulatorController.js
 const moment = require('moment-timezone');
 const expressAsyncHandler = require('express-async-handler');
-const { generateSessionAndFeedToken } = require('../utils/AppSession');
-const MarketData = require('../models/MarketData');
-const InstrumentData = require('../models/Instrument');
-
-let liveTrade = null;
-
-const breakoutBuffer = 13;
-const stopLossMultiplier = 20;
-const targetMultiplier = 20;
-const lotSize = 30;
-const strikeInterval = 100;
-const firstCandleMinute = 1;
-
-const simulateLiveTradingFromTickData = async (startTimeStr, endTimeStr) => {
-  const candleStart = moment.tz(startTimeStr, 'Asia/Kolkata');
-  const candleEnd = candleStart.clone().add(firstCandleMinute, 'minute');
-
-  const firstCandleAgg = await MarketData.aggregate([
-    {
-      $match: {
-        tradingSymbol: 'Nifty Bank',
-        exchange: 'NSE',
-        exchFeedTime: {
-          $gte: candleStart.format('YYYY-MM-DDTHH:mm:ssZ'),
-          $lt: candleEnd.format('YYYY-MM-DDTHH:mm:ssZ'),
-        },
-      },
-    },
-    { $sort: { exchFeedTime: 1 } },
-    {
-      $group: {
-        _id: null,
-        open: { $first: '$ltp' },
-        high: { $max: '$ltp' },
-        low: { $min: '$ltp' },
-        close: { $last: '$ltp' },
-      },
-    },
-  ]);
-
-  if (!firstCandleAgg.length) return console.log('❌ First Candle Missing');
-  const firstCandle = firstCandleAgg[0];
-
-  const breakoutHigh = firstCandle.high + breakoutBuffer;
-  const breakoutLow = firstCandle.low - breakoutBuffer;
-
-  const tickData = await MarketData.find({
-    tradingSymbol: 'Nifty Bank',
-    exchange: 'NSE',
-    exchFeedTime: {
-      $gte: candleEnd.format('YYYY-MM-DDTHH:mm:ssZ'),
-      $lte: moment
-        .tz(endTimeStr, 'Asia/Kolkata')
-        .format('YYYY-MM-DDTHH:mm:ssZ'),
-    },
-  }).sort({ exchFeedTime: 1 });
-
-  for (const tick of tickData) {
-    if (!liveTrade) {
-      const direction =
-        tick.ltp >= breakoutHigh
-          ? 'LONG'
-          : tick.ltp <= breakoutLow
-          ? 'SHORT'
-          : null;
-      if (!direction) continue;
-
-      const nearestStrike =
-        Math.round(tick.ltp / strikeInterval) * strikeInterval;
-      const selectedOptionType = direction === 'LONG' ? 'CE' : 'PE';
-      const selectedExpiry = '27MAR2025';
-
-      const optionToken = await InstrumentData.findOne({
-        name: 'BANKNIFTY',
-        expiry: selectedExpiry,
-        strike: (nearestStrike * 100).toFixed(6),
-        symbol: { $regex: selectedOptionType + '$' },
-      })
-        .select('token symbol expiry')
-        .lean();
-
-      if (!optionToken) continue;
-
-      const { smartApi } = await generateSessionAndFeedToken();
-
-      const orderPayload = {
-        variety: 'NORMAL',
-        tradingsymbol: optionToken.symbol,
-        symboltoken: optionToken.token,
-        transactiontype: direction === 'LONG' ? 'BUY' : 'SELL',
-        exchange: 'NFO',
-        ordertype: 'MARKET',
-        producttype: 'INTRADAY',
-        duration: 'DAY',
-        price: '0',
-        quantity: lotSize,
-      };
-
-      try {
-        const orderResponse = await smartApi.placeOrder(orderPayload);
-        console.log('🚀 Live Trade Placed:', orderResponse);
-        liveTrade = {
-          direction,
-          orderDetails: orderResponse,
-          entryTime: tick.exchFeedTime,
-          tradingSymbol: optionToken.symbol,
-          symbolToken: optionToken.token,
-          lotSize,
-          status: 'OPEN',
-        };
-      } catch (err) {
-        console.error('❌ Live Order Error:', err);
-      }
-    }
-  }
-};
+const { generateSessionAndFeedToken } = require('../../utils/AppSession');
+const MarketData = require('../../models/MarketData');
+const InstrumentData = require('../../models/Instrument');
 
 const createShortStraddleAt920 = expressAsyncHandler(async (req, res, next) => {
   try {
@@ -220,7 +107,7 @@ const createShortStraddleAt920 = expressAsyncHandler(async (req, res, next) => {
 
     // PLACE SL-M ORDERS
     const ceSLPayload = {
-      variety: 'NORMAL',
+      variety: 'STOPLOSS',
       tradingsymbol: ceOption.symbol,
       symboltoken: ceOption.token,
       transactiontype: 'BUY',
@@ -234,7 +121,7 @@ const createShortStraddleAt920 = expressAsyncHandler(async (req, res, next) => {
     };
 
     const peSLPayload = {
-      variety: 'NORMAL',
+      variety: 'STOPLOSS',
       tradingsymbol: peOption.symbol,
       symboltoken: peOption.token,
       transactiontype: 'BUY',
@@ -270,4 +157,4 @@ const createShortStraddleAt920 = expressAsyncHandler(async (req, res, next) => {
   }
 });
 
-module.exports = { simulateLiveTradingFromTickData, createShortStraddleAt920 };
+module.exports = { createShortStraddleAt920 };

@@ -7,11 +7,11 @@ const MarketData = require('../models/MarketData');
 let paperTrade = null;
 
 const breakoutBuffer = 13;
-const stopLossMultiplier = 20;
-const targetMultiplier = 20;
+const stopLossMultiplier = 15;
+const targetMultiplier = 15;
 const lotSize = 30;
 const strikeInterval = 100;
-const firstCandleMinute = 1;
+const firstCandleMinute = 3;
 
 // Simulator Function to Replay from Stored Tick Data
 const simulatePaperTradingFromTickData = async (startTimeStr, endTimeStr) => {
@@ -181,6 +181,6 @@ const simulatePaperTradingFromTickData = async (startTimeStr, endTimeStr) => {
   }
 };
 
-// simulatePaperTradingFromTickData('2025-03-12 09:15:00', '2025-03-12 09:50:00');
+simulatePaperTradingFromTickData('2025-03-12 09:15:00', '2025-03-12 09:30:00');
 
 module.exports = { simulatePaperTradingFromTickData };
