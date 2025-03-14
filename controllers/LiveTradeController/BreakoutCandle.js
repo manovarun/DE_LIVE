@@ -1,6 +1,8 @@
 // controllers/breakoutCandleLiveTrade.js
 const moment = require('moment-timezone');
+const axios = require('axios');
 const expressAsyncHandler = require('express-async-handler');
+const cron = require('node-cron');
 const { WebSocketV2 } = require('smartapi-javascript');
 const InstrumentData = require('../../models/Instrument');
 const MarketData = require('../../models/MarketData');
@@ -174,6 +176,7 @@ const breakoutCandleNios = expressAsyncHandler(async (req, res, next) => {
             console.log('📛 Stop Loss Order Placed:', slOrderResponse);
 
             liveTrade.slOrderId = slOrderResponse.data?.orderid || null;
+            liveTrade.slOrderStatus = slOrderResponse.status || 'Unknown';
           } catch (slErr) {
             console.error('❌ SL Order Placement Failed:', slErr);
           }
@@ -195,11 +198,16 @@ const breakoutCandleNios = expressAsyncHandler(async (req, res, next) => {
           entryTime: tick.exchFeedTime,
           lotSize,
           status: 'OPEN',
+          entryOrderId: orderResponse.data?.orderid || null,
+          retryTimestamps: [],
         };
 
-        console.log(liveTrade);
+        console.log('liveTrade', liveTrade);
 
         const setupWebSocket = (retryCount = 0) => {
+          const retryTimestamp = moment().format('YYYY-MM-DD HH:mm:ss');
+          liveTrade.retryTimestamps.push(retryTimestamp);
+
           const webSocket = new WebSocketV2({
             jwttoken: feedToken,
             apikey: apiKey,
@@ -223,58 +231,68 @@ const breakoutCandleNios = expressAsyncHandler(async (req, res, next) => {
               webSocket.fetchData(jsonReq);
 
               webSocket.on('tick', async (tickData) => {
-                const ltp = tickData.last_traded_price / 100;
-                if (liveTrade.status === 'OPEN') {
-                  if (ltp >= liveTrade.target || ltp <= liveTrade.stopLoss) {
-                    const exitOrderPayload = {
-                      variety: 'NORMAL',
-                      tradingsymbol: liveTrade.tradingSymbol,
-                      symboltoken: liveTrade.symbolToken,
-                      transactiontype: 'SELL',
-                      exchange: 'NFO',
-                      ordertype: 'MARKET',
-                      producttype: 'INTRADAY',
-                      duration: 'DAY',
-                      price: '0',
-                      quantity: liveTrade.lotSize,
-                    };
+                try {
+                  const ltp = tickData.last_traded_price / 100;
+                  if (liveTrade.status === 'OPEN') {
+                    let exitReason = null;
+                    if (ltp <= liveTrade.stopLoss) exitReason = 'Stop Loss Hit';
+                    else if (ltp >= liveTrade.target) exitReason = 'Target Hit';
 
-                    try {
-                      const exitRes = await smartApi.placeOrder(
-                        exitOrderPayload
-                      );
+                    if (exitReason) {
                       liveTrade.status = 'CLOSED';
-                      liveTrade.exitReason =
-                        ltp >= liveTrade.target
-                          ? 'Target Hit'
-                          : 'Stop Loss Hit';
+                      liveTrade.exitReason = exitReason;
                       liveTrade.exitLtp = ltp;
                       liveTrade.exitTime = new Date().toISOString();
 
-                      console.log(`🔔 Trade Closed: ${liveTrade.exitReason}`);
-                      webSocket.close();
-                    } catch (exitErr) {
-                      console.error('❌ Exit Order Failed:', exitErr);
+                      const exitOrderPayload = {
+                        variety: 'NORMAL',
+                        tradingsymbol: liveTrade.tradingSymbol,
+                        symboltoken: liveTrade.symbolToken,
+                        transactiontype: 'SELL',
+                        exchange: 'NFO',
+                        ordertype: 'MARKET',
+                        producttype: 'INTRADAY',
+                        duration: 'DAY',
+                        price: '0',
+                        quantity: liveTrade.lotSize,
+                      };
+
+                      try {
+                        const exitRes = await smartApi.placeOrder(
+                          exitOrderPayload
+                        );
+                        console.log(`🔔 Trade Closed: ${exitReason}`);
+                        if (liveTrade.slOrderId) {
+                          liveTrade.slCancelResponse =
+                            await smartApi.cancelOrder({
+                              variety: 'NORMAL',
+                              orderid: liveTrade.slOrderId,
+                            });
+                          console.log('❎ SL Order Cancelled after exit');
+                        }
+                        webSocket.close();
+                      } catch (exitErr) {
+                        console.error('❌ Exit Order Failed:', exitErr);
+                      }
                     }
                   }
+                } catch (tickErr) {
+                  console.error(
+                    '⚠️ Error inside WebSocket Tick Handler:',
+                    tickErr
+                  );
                 }
               });
 
-              webSocket.on('error', (err) => {
-                console.error('WebSocket Error:', err);
-              });
-
+              webSocket.on('error', (err) =>
+                console.error('WebSocket Error:', err)
+              );
               webSocket.on('close', () => {
-                console.log('WebSocket Connection Closed');
                 if (
                   liveTrade.status === 'OPEN' &&
                   retryCount < maxWebSocketRetries
                 ) {
-                  console.log(
-                    `🔁 Retrying WebSocket connection (${
-                      retryCount + 1
-                    }/${maxWebSocketRetries})...`
-                  );
+                  console.log(`🔁 Retrying WebSocket (${retryCount + 1})...`);
                   setTimeout(() => setupWebSocket(retryCount + 1), 2000);
                 }
               });
@@ -305,11 +323,31 @@ const breakoutCandleNios = expressAsyncHandler(async (req, res, next) => {
     }
   }
 
-  if (!liveTrade) {
+  if (!liveTrade)
     return res.status(200).json({
       success: true,
       message: 'No breakout happened in given interval',
     });
+});
+
+// Schedule breakout trade at 09:16 AM IST
+cron.schedule('00 16 09 * * 1-5', async () => {
+  const today = moment().tz('Asia/Kolkata').format('YYYY-MM-DD');
+  const startTimeStr = `${today} 09:15:00`;
+  const endTimeStr = `${today} 09:50:00`;
+
+  try {
+    const response = await axios.post(
+      'http://localhost:9000/api/order/breakout',
+      {
+        startTimeStr,
+        endTimeStr,
+      }
+    );
+
+    console.log('✅ Cron Triggered Breakout Trade:', response.data);
+  } catch (err) {
+    console.error('❌ Cron Trade Trigger Failed:', err.message);
   }
 });
 

@@ -15,6 +15,7 @@ const socketRouter = require('./routes/socket');
 const shortRouter = require('./routes/short');
 const longRouter = require('./routes/long');
 const orderRouter = require('./routes/order');
+const backtestRouter = require('./routes/backtest');
 
 const app = express();
 
@@ -34,6 +35,7 @@ app.use('/api/socket', socketRouter);
 app.use('/api/short', shortRouter);
 app.use('/api/long', longRouter);
 app.use('/api/order', orderRouter);
+app.use('/api/backtest', backtestRouter);
 
 app.use(GlobalErrorHandler);
 
