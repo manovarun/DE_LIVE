@@ -3,20 +3,27 @@ const expressAsyncHandler = require('express-async-handler');
 const InstrumentData = require('../../models/Instrument');
 const MarketData = require('../../models/MarketData');
 const PaperTradeLog = require('../../models/PaperTrade');
-
-const breakoutBuffer = 13;
-const strikeInterval = 100;
+const HistoricalOptionData = require('../../models/Option');
+const HistoricalIndicesData = require('../../models/Indices');
+const AppError = require('../../utils/AppError');
 
 exports.backtestBreakoutCandleNios = expressAsyncHandler(
   async (req, res, next) => {
     const {
       fromDate,
       toDate,
-      lotSize,
-      targetMultiplier,
-      stopLossMultiplier,
+      startTime = '09:15',
+      endTime = '09:50',
       firstCandleMinute,
+      breakoutBuffer,
+      strikeInterval,
+      stopLossMultiplier,
+      targetMultiplier,
+      lotSize,
+      trailingStopLoss = false,
+      trailMultiplier = 5,
     } = req.body;
+
     if (!fromDate || !toDate) {
       return res
         .status(400)
@@ -38,9 +45,15 @@ exports.backtestBreakoutCandleNios = expressAsyncHandler(
       date.add(1, 'day')
     ) {
       const currentDate = date.format('YYYY-MM-DD');
-      const candleStart = moment.tz(`${currentDate} 09:15:00`, 'Asia/Kolkata');
+      const candleStart = moment.tz(
+        `${currentDate} ${startTime}`,
+        'Asia/Kolkata'
+      );
       const candleEnd = candleStart.clone().add(firstCandleMinute, 'minute');
-      const backtestEnd = moment.tz(`${currentDate} 09:50:00`, 'Asia/Kolkata');
+      const backtestEnd = moment.tz(
+        `${currentDate} ${endTime}`,
+        'Asia/Kolkata'
+      );
 
       const firstCandleAgg = await MarketData.aggregate([
         {
@@ -79,122 +92,400 @@ exports.backtestBreakoutCandleNios = expressAsyncHandler(
         },
       }).sort({ exchFeedTime: 1 });
 
-      let paperTrade = null;
+      const breakoutTick = tickData.find(
+        (tick) => tick.ltp >= breakoutHigh || tick.ltp <= breakoutLow
+      );
+      if (!breakoutTick) continue;
 
-      for (let i = 0; i < tickData.length; i++) {
-        const tick = tickData[i];
-        if (!paperTrade) {
-          const direction =
-            tick.ltp >= breakoutHigh
-              ? 'LONG'
-              : tick.ltp <= breakoutLow
-              ? 'SHORT'
-              : null;
-          if (!direction) continue;
+      const direction = breakoutTick.ltp >= breakoutHigh ? 'LONG' : 'SHORT';
+      const nearestStrike =
+        Math.round(breakoutTick.ltp / strikeInterval) * strikeInterval;
+      const selectedOptionType = direction === 'LONG' ? 'CE' : 'PE';
+      const selectedExpiry = '27MAR2025';
 
-          const nearestStrike =
-            Math.round(tick.ltp / strikeInterval) * strikeInterval;
-          const selectedOptionType = direction === 'LONG' ? 'CE' : 'PE';
-          const selectedExpiry = '27MAR2025';
+      const optionToken = await InstrumentData.findOne({
+        name: 'BANKNIFTY',
+        expiry: selectedExpiry,
+        strike: (nearestStrike * 100).toFixed(6),
+        symbol: { $regex: selectedOptionType + '$' },
+      })
+        .select('token symbol expiry')
+        .lean();
+      if (!optionToken) continue;
 
-          const optionToken = await InstrumentData.findOne({
-            name: 'BANKNIFTY',
-            expiry: selectedExpiry,
-            strike: (nearestStrike * 100).toFixed(6),
-            symbol: { $regex: selectedOptionType + '$' },
-          })
-            .select('token symbol expiry')
-            .lean();
+      const entryTick = await MarketData.findOne({
+        symbolToken: optionToken.token,
+        exchTradeTime: { $lte: breakoutTick.exchFeedTime },
+      })
+        .sort({ exchTradeTime: -1 })
+        .lean();
+      if (!entryTick) continue;
 
-          if (!optionToken) break;
+      const entryPrice = entryTick.ltp;
+      let stopLoss = +(entryPrice * (1 - stopLossMultiplier / 100)).toFixed(2);
+      const target = +(entryPrice * (1 + targetMultiplier / 100)).toFixed(2);
+      const rrRatio = +(target - entryPrice) / (entryPrice - stopLoss);
 
-          const optionLTP = await MarketData.findOne({
-            symbolToken: optionToken.token,
-            exchFeedTime: { $lte: tick.exchFeedTime },
-          })
-            .sort({ exchFeedTime: -1 })
-            .lean();
+      const exitTicks = await MarketData.find({
+        symbolToken: optionToken.token,
+        $and: [
+          {
+            $or: [
+              { exchTradeTime: { $exists: true, $ne: null } },
+              { exchFeedTime: { $exists: true } },
+            ],
+          },
+          {
+            $or: [
+              {
+                exchTradeTime: {
+                  $gte: breakoutTick.exchFeedTime,
+                  $lte: backtestEnd.format('YYYY-MM-DDTHH:mm:ssZ'),
+                },
+              },
+              {
+                exchFeedTime: {
+                  $gte: breakoutTick.exchFeedTime,
+                  $lte: backtestEnd.format('YYYY-MM-DDTHH:mm:ssZ'),
+                },
+              },
+            ],
+          },
+        ],
+      }).sort({ exchTradeTime: 1, exchFeedTime: 1 });
 
-          if (!optionLTP) break;
+      let exitPrice = entryPrice;
+      let exitTime = null;
+      let exitReason = 'Time Exit';
 
-          const entryPrice = optionLTP.ltp;
-          const stopLoss = +(
-            entryPrice *
-            (1 - stopLossMultiplier / 100)
+      for (const tick of exitTicks) {
+        const currentLTP = tick.ltp;
+        const tickTime = tick.exchTradeTime || tick.exchFeedTime;
+
+        if (currentLTP >= target) {
+          exitPrice = target;
+          exitTime = tickTime;
+          exitReason = 'Target Hit';
+          break;
+        } else if (currentLTP <= stopLoss) {
+          exitPrice = currentLTP;
+          exitTime = tickTime;
+          exitReason = 'Stop Loss Triggered';
+          break;
+        } else if (trailingStopLoss && currentLTP > entryPrice) {
+          const newTrailSL = +(
+            currentLTP *
+            (1 - trailMultiplier / 100)
           ).toFixed(2);
-          const target = +(entryPrice * (1 + targetMultiplier / 100)).toFixed(
-            2
-          );
-          const rrRatio = (target - entryPrice) / (entryPrice - stopLoss);
+          if (newTrailSL > stopLoss) stopLoss = newTrailSL;
+        } else if (moment(tickTime).isSameOrAfter(backtestEnd)) {
+          exitPrice = currentLTP;
+          exitTime = tickTime;
+          exitReason = 'Time Exit';
+          break;
+        }
+      }
 
-          paperTrade = {
-            date: currentDate,
-            firstCandleMinute,
-            direction,
-            tradingSymbol: optionToken.symbol,
-            symbolToken: optionToken.token,
-            nearestStrike,
-            selectedOptionType,
-            expiry: selectedExpiry,
-            entryPrice,
-            stopLoss,
-            target,
-            rrRatio,
-            entryTime: tick.exchFeedTime,
-            lotSize,
-            status: 'OPEN',
-          };
-        } else if (paperTrade.status === 'OPEN') {
-          const optionTick = await MarketData.findOne({
-            symbolToken: paperTrade.symbolToken,
-            exchFeedTime: { $lte: tick.exchFeedTime },
-          })
-            .sort({ exchFeedTime: -1 })
-            .lean();
+      if (!exitTime && exitTicks.length > 0) {
+        const lastTick = exitTicks[exitTicks.length - 1];
+        exitTime = lastTick.exchTradeTime || lastTick.exchFeedTime;
+        exitPrice = lastTick.ltp;
+      }
 
-          if (!optionTick) continue;
+      const pnl = (exitPrice - entryPrice) * lotSize;
+      cumulativePnL += pnl;
+      totalTrades++;
+      pnl > 0 ? winTrades++ : lossTrades++;
 
-          const price = optionTick.ltp;
-          let exitReason = '';
+      const tradeResult = {
+        date: currentDate,
+        firstCandleMinute,
+        direction,
+        tradingSymbol: optionToken.symbol,
+        symbolToken: optionToken.token,
+        nearestStrike,
+        selectedOptionType,
+        expiry: selectedExpiry,
+        entryPrice,
+        stopLoss,
+        target,
+        rrRatio,
+        entryTime: breakoutTick.exchFeedTime,
+        exitPrice,
+        exitTime,
+        exitReason,
+        pnl,
+        lotSize,
+        status: 'CLOSED',
+      };
 
-          console.log(
-            `🔍 Tick: ${tick.exchFeedTime} | Option Trade Time: ${
-              optionTick.exchTradeTime
-            } | Option Price: ${price.toFixed(2)} | SL: ${
-              paperTrade.stopLoss
-            } | Target: ${paperTrade.target}`
-          );
+      // await PaperTradeLog.create(tradeResult);
+      allResults.push(tradeResult);
+    }
 
-          if (price >= paperTrade.target) {
-            exitReason = 'Target Hit';
-          } else if (price <= paperTrade.stopLoss) {
-            exitReason = 'Stop Loss Triggered';
-          } else if (moment(tick.exchFeedTime).isSameOrAfter(backtestEnd)) {
-            exitReason = 'Time Exit';
-          }
+    const winRate = ((winTrades / totalTrades) * 100).toFixed(2);
 
-          if (exitReason || i === tickData.length - 1) {
-            paperTrade.status = 'CLOSED';
-            paperTrade.exitPrice = price;
-            paperTrade.exitTime = optionTick.exchFeedTime;
-            paperTrade.exitReason = exitReason || 'Session End';
-            paperTrade.pnl =
-              (paperTrade.direction === 'LONG'
-                ? paperTrade.exitPrice - paperTrade.entryPrice
-                : paperTrade.entryPrice - paperTrade.exitPrice) *
-              paperTrade.lotSize;
+    res.status(200).json({
+      success: true,
+      summary: {
+        totalTrades,
+        winTrades,
+        lossTrades,
+        winRate: `${winRate}%`,
+        cumulativePnL,
+      },
+      results: allResults,
+    });
+  }
+);
 
-            totalTrades++;
-            cumulativePnL += paperTrade.pnl;
-            paperTrade.pnl > 0 ? winTrades++ : lossTrades++;
+exports.backtestBreakoutCandleAura = expressAsyncHandler(
+  async (req, res, next) => {
+    const {
+      fromDate,
+      toDate,
+      startTime = '09:15',
+      endTime = '09:50',
+      firstCandleMinute,
+      breakoutBuffer,
+      strikeInterval,
+      stopLossMultiplier,
+      targetMultiplier,
+      lotSize,
+      trailingStopLoss = false,
+      trailMultiplier = 5,
+      stockSymbol = 'Nifty Bank',
+      stockName = 'BANKNIFTY',
+      expiries = [],
+    } = req.body;
 
-            await PaperTradeLog.create({ ...paperTrade });
-            allResults.push({ ...paperTrade });
-            paperTrade = null;
+    if (!fromDate || !toDate) {
+      return res
+        .status(400)
+        .json({ success: false, message: 'Missing date range' });
+    }
+
+    const fromDateMoment = moment(fromDate, 'YYYY-MM-DD');
+    const toDateMoment = moment(toDate, 'YYYY-MM-DD');
+
+    const allResults = [];
+    let totalTrades = 0;
+    let winTrades = 0;
+    let lossTrades = 0;
+    let cumulativePnL = 0;
+
+    for (
+      let date = fromDateMoment.clone();
+      date.isSameOrBefore(toDateMoment);
+      date.add(1, 'day')
+    ) {
+      const currentDate = date.format('YYYY-MM-DD');
+
+      const expiryObj =
+        expiries.find((e) =>
+          moment(currentDate).isSameOrBefore(e.validUntil)
+        ) || expiries[expiries.length - 1];
+      const expiry = expiryObj.expiry;
+
+      const candleStart = moment.tz(
+        `${currentDate} ${startTime}`,
+        'Asia/Kolkata'
+      );
+      const breakoutCheckStart = candleStart
+        .clone()
+        .add(firstCandleMinute, 'minute');
+      const backtestEnd = moment.tz(
+        `${currentDate} ${endTime}`,
+        'Asia/Kolkata'
+      );
+
+      const spotData = await HistoricalIndicesData.findOne({
+        stockSymbol: 'Nifty Bank',
+        stockName: 'BANKNIFTY',
+        timeInterval: `M${firstCandleMinute}`,
+        datetime: candleStart.format('YYYY-MM-DDTHH:mm:ssZ'),
+      })
+        .select('open high low close')
+        .lean();
+
+      if (!spotData) {
+        console.warn(`No spot data found for on ${date}`);
+        continue;
+      }
+
+      const breakoutHigh = spotData.high + breakoutBuffer;
+      const breakoutLow = spotData.low - breakoutBuffer;
+
+      console.log(
+        `Breakout High: ${breakoutHigh}, Breakout Low: ${breakoutLow}, Expiry: ${expiry}`
+      );
+
+      let breakoutTime = null;
+      let direction = null;
+
+      const tickData = await HistoricalIndicesData.find({
+        stockSymbol,
+        stockName,
+        timeInterval: 'M1',
+        datetime: {
+          $gte: breakoutCheckStart.format('YYYY-MM-DDTHH:mm:ssZ'),
+          $lte: backtestEnd.format('YYYY-MM-DDTHH:mm:ssZ'),
+        },
+      })
+        .select('datetime close')
+        .sort({ datetime: 1 })
+        .lean();
+
+      const breakoutTick = tickData.find(
+        (tick) => tick.close >= breakoutHigh || tick.close <= breakoutLow
+      );
+
+      if (!breakoutTick) continue;
+
+      for (const candle of tickData) {
+        if (!direction) {
+          if (candle.close >= breakoutHigh) {
+            direction = 'LONG';
+            breakoutTime = candle.datetime;
+            break;
+          } else if (candle.close <= breakoutLow) {
+            direction = 'SHORT';
+            breakoutTime = candle.datetime;
             break;
           }
         }
       }
+
+      console.log('direction', direction);
+
+      const nearestStrike =
+        Math.round(breakoutTick.close / strikeInterval) * strikeInterval;
+
+      console.log('nearestStrike', nearestStrike);
+
+      const selectedOptionType = direction === 'LONG' ? 'CE' : 'PE';
+
+      console.log('selectedOptionType', selectedOptionType);
+
+      const selectedExpiry = expiry;
+
+      const optionToken = await InstrumentData.findOne({
+        name: 'BANKNIFTY',
+        expiry: selectedExpiry,
+        strike: (nearestStrike * 100).toFixed(6),
+        symbol: { $regex: selectedOptionType + '$' },
+      })
+        .select('token symbol expiry')
+        .lean();
+
+      if (!optionToken) continue;
+
+      const entryTick = await HistoricalOptionData.findOne({
+        stockName: 'BANKNIFTY',
+        expiry,
+        strikePrice: nearestStrike,
+        optionType: selectedOptionType,
+        timeInterval: 'M1',
+        datetime: breakoutTime,
+      })
+        .select('datetime close strikePrice optionType')
+        .lean();
+
+      if (!entryTick) continue;
+
+      const entryPrice = entryTick.close;
+
+      let stopLoss = +(entryPrice * (1 - stopLossMultiplier / 100)).toFixed(2);
+      const target = +(entryPrice * (1 + targetMultiplier / 100)).toFixed(2);
+      const rrRatio = +(target - entryPrice) / (entryPrice - stopLoss);
+
+      console.log('stopLoss', stopLoss);
+      console.log('target', target);
+
+      const exitTicks = await HistoricalOptionData.find({
+        stockName: 'BANKNIFTY',
+        expiry,
+        strikePrice: nearestStrike,
+        optionType: selectedOptionType,
+        timeInterval: 'M1',
+        datetime: {
+          $gte: breakoutCheckStart.format('YYYY-MM-DDTHH:mm:ssZ'),
+          $lte: backtestEnd.format('YYYY-MM-DDTHH:mm:ssZ'),
+        },
+      })
+        .select('datetime close')
+        .sort({ datetime: 1 })
+        .lean();
+
+      if (exitTicks.length === 0) continue;
+
+      let exitPrice = entryPrice;
+      let exitTime = null;
+      let exitReason = 'Time Exit';
+
+      for (const tick of exitTicks) {
+        const currentLTP = tick.close;
+        const tickTime = tick.datetime;
+
+        if (currentLTP >= target) {
+          exitPrice = target;
+          exitTime = tickTime;
+          exitReason = 'Target Hit';
+          break;
+        } else if (currentLTP <= stopLoss) {
+          exitPrice = currentLTP;
+          exitTime = tickTime;
+          exitReason = 'Stop Loss Triggered';
+          break;
+        } else if (trailingStopLoss && currentLTP > entryPrice) {
+          const newTrailSL = +(
+            currentLTP *
+            (1 - trailMultiplier / 100)
+          ).toFixed(2);
+          if (newTrailSL > stopLoss) stopLoss = newTrailSL;
+        } else if (moment(tickTime).isSameOrAfter(backtestEnd)) {
+          exitPrice = currentLTP;
+          exitTime = tickTime;
+          exitReason = 'Time Exit';
+          break;
+        }
+      }
+
+      if (!exitTime && exitTicks.length > 0) {
+        const lastTick = exitTicks[exitTicks.length - 1];
+        exitTime = lastTick.exchTradeTime || lastTick.exchFeedTime;
+        exitPrice = lastTick.close;
+      }
+
+      const pnl = (exitPrice - entryPrice) * lotSize;
+      cumulativePnL += pnl;
+      totalTrades++;
+      pnl > 0 ? winTrades++ : lossTrades++;
+
+      const tradeResult = {
+        date: currentDate,
+        firstCandleMinute,
+        direction,
+        tradingSymbol: optionToken.symbol,
+        symbolToken: optionToken.token,
+        nearestStrike,
+        selectedOptionType,
+        expiry: selectedExpiry,
+        entryPrice,
+        stopLoss,
+        target,
+        rrRatio,
+        entryTime: breakoutTick.datetime,
+        exitPrice,
+        exitTime,
+        exitReason,
+        pnl,
+        lotSize,
+        status: 'CLOSED',
+      };
+
+      // await PaperTradeLog.create(tradeResult);
+      allResults.push(tradeResult);
     }
 
     const winRate = ((winTrades / totalTrades) * 100).toFixed(2);
