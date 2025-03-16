@@ -1,155 +1,210 @@
-// controllers/breakoutBacktestControllerAura.js
-const moment = require('moment-timezone');
-const expressAsyncHandler = require('express-async-handler');
-const HistoricalIndicesData = require('../../models/HistoricalIndicesData');
-const HistoricalOptionData = require('../../models/HistoricalOptionData');
-
 exports.backtestBreakoutCandleAura = expressAsyncHandler(
   async (req, res, next) => {
-    try {
-      const {
-        fromDate,
-        toDate,
-        startTime = '09:15',
-        endTime = '09:50',
-        firstCandleMinute,
-        breakoutBuffer,
-        strikeInterval,
-        stopLossMultiplier,
-        targetMultiplier,
-        lotSize,
-        trailingStopLoss = false,
-        trailMultiplier = 5,
-        stockSymbol = 'Nifty Bank',
-        stockName = 'BANKNIFTY',
-        expiries = [],
-      } = req.body;
+    const {
+      fromDate,
+      toDate,
+      startTime = '09:15',
+      endTime = '09:50',
+      firstCandleMinute,
+      breakoutBuffer,
+      strikeInterval,
+      stopLossMultiplier,
+      targetMultiplier,
+      lotSize,
+      trailingStopLoss = false,
+      trailMultiplier = 5,
+      enableScalping = true,
+      scalpingProfit = 1000,
+      scalpingLoss = 1000,
+      stockSymbol = 'Nifty Bank',
+      stockName = 'BANKNIFTY',
+      // expiry = '27MAR2025',
+      expiries = [],
+    } = req.body;
 
-      if (!fromDate || !toDate) {
-        return res
-          .status(400)
-          .json({ success: false, message: 'Missing date range' });
+    if (!fromDate || !toDate) {
+      return res
+        .status(400)
+        .json({ success: false, message: 'Missing date range' });
+    }
+
+    const fromDateMoment = moment(fromDate, 'YYYY-MM-DD');
+    const toDateMoment = moment(toDate, 'YYYY-MM-DD');
+
+    const allResults = [];
+    let totalTrades = 0;
+    let winTrades = 0;
+    let lossTrades = 0;
+    let cumulativePnL = 0;
+
+    for (
+      let date = fromDateMoment.clone();
+      date.isSameOrBefore(toDateMoment);
+      date.add(1, 'day')
+    ) {
+      const currentDate = date.format('YYYY-MM-DD');
+
+      const expiryObj =
+        expiries.find((e) =>
+          moment(currentDate).isSameOrBefore(e.validUntil)
+        ) || expiries[expiries.length - 1];
+      const expiry = expiryObj.expiry;
+
+      const candleStart = moment.tz(
+        `${currentDate} ${startTime}`,
+        'Asia/Kolkata'
+      );
+      const breakoutCheckStart = candleStart
+        .clone()
+        .add(firstCandleMinute, 'minute');
+      const backtestEnd = moment.tz(
+        `${currentDate} ${endTime}`,
+        'Asia/Kolkata'
+      );
+
+      const spotData = await HistoricalIndicesData.findOne({
+        stockSymbol: 'Nifty Bank',
+        stockName: 'BANKNIFTY',
+        timeInterval: `M${firstCandleMinute}`,
+        datetime: candleStart.format('YYYY-MM-DDTHH:mm:ssZ'),
+      })
+        .select('open high low close')
+        .lean();
+
+      if (!spotData) {
+        console.warn(`No spot data found for on ${date}`);
+        continue;
       }
 
-      const fromDateMoment = moment(fromDate, 'YYYY-MM-DD');
-      const toDateMoment = moment(toDate, 'YYYY-MM-DD');
+      const breakoutHigh = spotData.high + breakoutBuffer;
+      const breakoutLow = spotData.low - breakoutBuffer;
 
-      const allResults = [];
-      let totalTrades = 0;
-      let winTrades = 0;
-      let lossTrades = 0;
-      let cumulativePnL = 0;
+      console.log(
+        `Breakout High: ${breakoutHigh}, Breakout Low: ${breakoutLow}, Expiry: ${expiry}`
+      );
 
-      for (
-        let date = fromDateMoment.clone();
-        date.isSameOrBefore(toDateMoment);
-        date.add(1, 'day')
-      ) {
-        const currentDate = date.format('YYYY-MM-DD');
+      let breakoutTime = null;
+      let direction = null;
 
-        const expiryObj =
-          expiries.find((e) =>
-            moment(currentDate).isSameOrBefore(e.validUntil)
-          ) || expiries[expiries.length - 1];
-        const expiry = expiryObj.expiry;
+      const tickData = await HistoricalIndicesData.find({
+        stockSymbol,
+        stockName,
+        timeInterval: 'M1',
+        datetime: {
+          $gte: breakoutCheckStart.format('YYYY-MM-DDTHH:mm:ssZ'),
+          $lte: backtestEnd.format('YYYY-MM-DDTHH:mm:ssZ'),
+        },
+      })
+        .select('datetime close')
+        .sort({ datetime: 1 })
+        .lean();
 
-        const candleStart = moment.tz(
-          `${currentDate} ${startTime}`,
-          'Asia/Kolkata'
-        );
-        const breakoutCheckStart = candleStart
-          .clone()
-          .add(firstCandleMinute, 'minute');
-        const backtestEnd = moment.tz(
-          `${currentDate} ${endTime}`,
-          'Asia/Kolkata'
-        );
+      const breakoutTick = tickData.find(
+        (tick) => tick.close >= breakoutHigh || tick.close <= breakoutLow
+      );
 
-        const spotData = await HistoricalIndicesData.findOne({
-          stockSymbol,
-          stockName,
-          timeInterval: `M${firstCandleMinute}`,
-          datetime: candleStart.format('YYYY-MM-DDTHH:mm:ssZ'),
-        })
-          .select('open high low close')
-          .lean();
+      if (!breakoutTick) continue;
 
-        if (!spotData) continue;
+      for (const candle of tickData) {
+        if (!direction) {
+          if (candle.close >= breakoutHigh) {
+            direction = 'LONG';
+            breakoutTime = candle.datetime;
+            break;
+          } else if (candle.close <= breakoutLow) {
+            direction = 'SHORT';
+            breakoutTime = candle.datetime;
+            break;
+          }
+        }
+      }
 
-        const breakoutHigh = spotData.high + breakoutBuffer;
-        const breakoutLow = spotData.low - breakoutBuffer;
+      console.log('direction', direction);
 
-        const tickData = await HistoricalIndicesData.find({
-          stockSymbol,
-          stockName,
-          timeInterval: 'M1',
-          datetime: {
-            $gte: breakoutCheckStart.format('YYYY-MM-DDTHH:mm:ssZ'),
-            $lte: backtestEnd.format('YYYY-MM-DDTHH:mm:ssZ'),
-          },
-        })
-          .select('datetime close')
-          .sort({ datetime: 1 })
-          .lean();
+      const nearestStrike =
+        Math.round(breakoutTick.close / strikeInterval) * strikeInterval;
 
-        const breakoutTick = tickData.find(
-          (tick) => tick.close >= breakoutHigh || tick.close <= breakoutLow
-        );
+      console.log('nearestStrike', nearestStrike);
 
-        if (!breakoutTick) continue;
+      const selectedOptionType = direction === 'LONG' ? 'CE' : 'PE';
 
-        const breakoutDirection =
-          breakoutTick.close >= breakoutHigh ? 'LONG' : 'SHORT';
-        const nearestStrike =
-          Math.round(breakoutTick.close / strikeInterval) * strikeInterval;
-        const selectedOptionType = breakoutDirection === 'LONG' ? 'CE' : 'PE';
-        const breakoutTime = breakoutTick.datetime;
+      console.log('selectedOptionType', selectedOptionType);
 
-        const optionData = await HistoricalOptionData.findOne({
-          stockName,
-          expiry,
-          strikePrice: nearestStrike,
-          optionType: selectedOptionType,
-          timeInterval: 'M1',
-          datetime: breakoutTime,
-        })
-          .select('datetime close strikePrice optionType')
-          .lean();
+      const selectedExpiry = expiry;
 
-        if (!optionData) continue;
+      const optionToken = await InstrumentData.findOne({
+        name: 'BANKNIFTY',
+        expiry: selectedExpiry,
+        strike: (nearestStrike * 100).toFixed(6),
+        symbol: { $regex: selectedOptionType + '$' },
+      })
+        .select('token symbol expiry')
+        .lean();
 
-        const entryPrice = optionData.close;
-        let stopLoss = +(entryPrice * (1 - stopLossMultiplier / 100)).toFixed(
-          2
-        );
-        const target = +(entryPrice * (1 + targetMultiplier / 100)).toFixed(2);
-        const rrRatio = +(
-          (target - entryPrice) /
-          (entryPrice - stopLoss)
-        ).toFixed(2);
+      if (!optionToken) continue;
 
-        const exitTicks = await HistoricalOptionData.find({
-          stockName,
-          expiry,
-          strikePrice: nearestStrike,
-          optionType: selectedOptionType,
-          timeInterval: 'M1',
-          datetime: {
-            $gte: breakoutTime,
-            $lte: backtestEnd.format('YYYY-MM-DDTHH:mm:ssZ'),
-          },
-        })
-          .sort({ datetime: 1 })
-          .lean();
+      const entryTick = await HistoricalOptionData.findOne({
+        stockName: 'BANKNIFTY',
+        expiry,
+        strikePrice: nearestStrike,
+        optionType: selectedOptionType,
+        timeInterval: 'M1',
+        datetime: breakoutTime,
+      })
+        .select('datetime close strikePrice optionType')
+        .lean();
 
-        let exitPrice = entryPrice;
-        let exitTime = null;
-        let exitReason = 'Time Exit';
+      if (!entryTick) continue;
 
-        for (const tick of exitTicks) {
-          const currentLTP = tick.close;
-          const tickTime = tick.datetime;
+      const entryPrice = entryTick.close;
 
+      let stopLoss = +(entryPrice * (1 - stopLossMultiplier / 100)).toFixed(2);
+      let target = +(entryPrice * (1 + targetMultiplier / 100)).toFixed(2);
+      const rrRatio = +(target - entryPrice) / (entryPrice - stopLoss);
+
+      console.log('stopLoss', stopLoss);
+      console.log('target', target);
+
+      const exitTicks = await HistoricalOptionData.find({
+        stockName: 'BANKNIFTY',
+        expiry,
+        strikePrice: nearestStrike,
+        optionType: selectedOptionType,
+        timeInterval: 'M1',
+        datetime: {
+          $gte: breakoutCheckStart.format('YYYY-MM-DDTHH:mm:ssZ'),
+          $lte: backtestEnd.format('YYYY-MM-DDTHH:mm:ssZ'),
+        },
+      })
+        .select('datetime close')
+        .sort({ datetime: 1 })
+        .lean();
+
+      if (exitTicks.length === 0) continue;
+
+      let exitPrice = entryPrice;
+      let exitTime = null;
+      let exitReason = 'Time Exit';
+
+      for (const tick of exitTicks) {
+        const currentLTP = tick.close;
+        const tickTime = tick.datetime;
+        const pnl = (currentLTP - entryPrice) * lotSize;
+
+        if (enableScalping) {
+          if (pnl >= scalpingProfit) {
+            exitPrice = currentLTP;
+            exitTime = tickTime;
+            exitReason = 'Scalping Target Hit';
+            break;
+          }
+          // } else if (pnl <= -scalpingLoss) {
+          //   exitPrice = currentLTP;
+          //   exitTime = tickTime;
+          //   exitReason = 'Scalping Stop Loss';
+          //   break;
+          // }
+        } else {
           if (currentLTP >= target) {
             exitPrice = target;
             exitTime = tickTime;
@@ -173,64 +228,57 @@ exports.backtestBreakoutCandleAura = expressAsyncHandler(
             break;
           }
         }
-
-        if (!exitTime && exitTicks.length > 0) {
-          const lastTick = exitTicks[exitTicks.length - 1];
-          exitTime = lastTick.datetime;
-          exitPrice = lastTick.close;
-        }
-
-        const pnl = (exitPrice - entryPrice) * lotSize;
-        cumulativePnL += pnl;
-        totalTrades++;
-        pnl > 0 ? winTrades++ : lossTrades++;
-
-        const tradeResult = {
-          date: currentDate,
-          firstCandleMinute,
-          direction: breakoutDirection,
-          tradingSymbol: `${stockSymbol}${expiry}${nearestStrike}${selectedOptionType}`,
-          strikePrice: nearestStrike,
-          selectedOptionType,
-          expiry,
-          entryPrice,
-          stopLoss,
-          target,
-          rrRatio,
-          entryTime: breakoutTime,
-          exitPrice,
-          exitTime,
-          exitReason,
-          pnl,
-          lotSize,
-          status: 'CLOSED',
-        };
-
-        allResults.push(tradeResult);
       }
 
-      const winRate = ((winTrades / totalTrades) * 100).toFixed(2);
+      if (!exitTime && exitTicks.length > 0) {
+        const lastTick = exitTicks[exitTicks.length - 1];
+        exitTime = lastTick.exchTradeTime || lastTick.exchFeedTime;
+        exitPrice = lastTick.close;
+      }
 
-      res.status(200).json({
-        success: true,
-        summary: {
-          totalTrades,
-          winTrades,
-          lossTrades,
-          winRate: `${winRate}%`,
-          cumulativePnL,
-        },
-        results: allResults,
-      });
-    } catch (error) {
-      console.error('Backtest Error:', error);
-      res
-        .status(500)
-        .json({
-          success: false,
-          message: 'Internal Server Error',
-          error: error.message,
-        });
+      const pnl = (exitPrice - entryPrice) * lotSize;
+      cumulativePnL += pnl;
+      totalTrades++;
+      pnl > 0 ? winTrades++ : lossTrades++;
+
+      const tradeResult = {
+        date: currentDate,
+        firstCandleMinute,
+        direction,
+        tradingSymbol: optionToken.symbol,
+        symbolToken: optionToken.token,
+        nearestStrike,
+        selectedOptionType,
+        expiry: selectedExpiry,
+        entryPrice,
+        stopLoss,
+        target,
+        rrRatio,
+        entryTime: breakoutTick.datetime,
+        exitPrice,
+        exitTime,
+        exitReason,
+        pnl,
+        lotSize,
+        status: 'CLOSED',
+      };
+
+      // await PaperTradeLog.create(tradeResult);
+      allResults.push(tradeResult);
     }
+
+    const winRate = ((winTrades / totalTrades) * 100).toFixed(2);
+
+    res.status(200).json({
+      success: true,
+      summary: {
+        totalTrades,
+        winTrades,
+        lossTrades,
+        winRate: `${winRate}%`,
+        cumulativePnL,
+      },
+      results: allResults,
+    });
   }
 );
