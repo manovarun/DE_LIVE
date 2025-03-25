@@ -16,7 +16,7 @@ exports.liveBreakoutFuturesOptionsCandle = expressAsyncHandler(
       startTimeStr,
       endTimeStr,
       firstCandleMinute = 3,
-      breakoutBuffer = 13,
+      breakoutBuffer = 11,
       stopLossMultiplier = 22,
       targetMultiplier = 22,
       lotSize = 30,
