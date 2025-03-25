@@ -13,6 +13,9 @@ const {
 const {
   breakoutCandleNios,
 } = require('../controllers/LiveTradeController/BreakoutCandle');
+const {
+  liveBreakoutFuturesOptionsCandle,
+} = require('../controllers/LiveTradeController/BreakoutFuturesOptions');
 
 const router = express.Router();
 
@@ -26,5 +29,6 @@ router.route('/gettradebook').post(getTradeBook);
 //LIVE TRADE
 router.route('/shortstraddle').post(createShortStraddleAt920);
 router.route('/breakout').post(breakoutCandleNios);
+router.route('/live-breakout').post(liveBreakoutFuturesOptionsCandle);
 
 module.exports = router;

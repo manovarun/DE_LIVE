@@ -331,24 +331,24 @@ const breakoutCandleNios = expressAsyncHandler(async (req, res, next) => {
 });
 
 // Schedule breakout trade at 09:16 AM IST
-cron.schedule('00 16 09 * * 1-5', async () => {
-  const today = moment().tz('Asia/Kolkata').format('YYYY-MM-DD');
-  const startTimeStr = `${today} 09:15:00`;
-  const endTimeStr = `${today} 09:50:00`;
+// cron.schedule('00 16 09 * * 1-5', async () => {
+//   const today = moment().tz('Asia/Kolkata').format('YYYY-MM-DD');
+//   const startTimeStr = `${today} 09:15:00`;
+//   const endTimeStr = `${today} 09:50:00`;
 
-  try {
-    const response = await axios.post(
-      'http://localhost:9000/api/order/breakout',
-      {
-        startTimeStr,
-        endTimeStr,
-      }
-    );
+//   try {
+//     const response = await axios.post(
+//       'http://localhost:9000/api/order/breakout',
+//       {
+//         startTimeStr,
+//         endTimeStr,
+//       }
+//     );
 
-    console.log('✅ Cron Triggered Breakout Trade:', response.data);
-  } catch (err) {
-    console.error('❌ Cron Trade Trigger Failed:', err.message);
-  }
-});
+//     console.log('✅ Cron Triggered Breakout Trade:', response.data);
+//   } catch (err) {
+//     console.error('❌ Cron Trade Trigger Failed:', err.message);
+//   }
+// });
 
 module.exports = { breakoutCandleNios };

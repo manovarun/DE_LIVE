@@ -1,16 +1,24 @@
 const express = require('express');
 const {
-  backtestBreakoutCandleNios,
-  backtestBreakoutCandleAura,
-  backtestBreakoutFuturesNios,
-  backtestBreakoutFuturesAura,
+  backtestBreakoutFuturesTick,
+  backtestBreakoutFuturesCandle,
+  backtestBreakoutFuturesOptionsTick,
+  backtestBreakoutFuturesOptionsCandle,
 } = require('../controllers/BacktestController/BacktestBreakoutCandle');
+const {
+  backtestBuyFuturesWithSupertrend,
+} = require('../controllers/BacktestController/SpreadController');
 
 const router = express.Router();
 
-router.route('/breakout').post(backtestBreakoutCandleNios);
-router.route('/breakout-candle').post(backtestBreakoutCandleAura);
-router.route('/breakout-fut').post(backtestBreakoutFuturesNios);
-router.route('/breakout-future-candle').post(backtestBreakoutFuturesAura);
+router.route('/breakout-fut-tick').post(backtestBreakoutFuturesTick);
+router.route('/breakout-fut-candle').post(backtestBreakoutFuturesCandle);
+router
+  .route('/breakout-fut-opt-candle')
+  .post(backtestBreakoutFuturesOptionsCandle);
+
+router.route('/breakout-fut-opt-tick').post(backtestBreakoutFuturesOptionsTick);
+
+router.route('/buy-fut').post(backtestBuyFuturesWithSupertrend);
 
 module.exports = router;
