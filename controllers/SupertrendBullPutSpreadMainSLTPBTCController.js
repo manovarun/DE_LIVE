@@ -842,6 +842,9 @@ async function runSupertrendBullPutSingleRunBTC(params) {
   let losses = 0;
   let cumulativePnL = 0;
 
+  // Highest profit / highest loss per-trade (PnL after qty multiplier)
+  let maxProfitInTrade = null;
+  let maxLossInTrade = null;
   const fromDateMoment = moment.tz(fromDate, 'YYYY-MM-DD', timezone);
   const toDateMoment = moment.tz(toDate, 'YYYY-MM-DD', timezone);
 
@@ -1219,6 +1222,11 @@ async function runSupertrendBullPutSingleRunBTC(params) {
 
       const netPnl = netPoints * q;
 
+      // Track best/worst trade PnL
+      if (maxProfitInTrade === null || netPnl > maxProfitInTrade)
+        maxProfitInTrade = netPnl;
+      if (maxLossInTrade === null || netPnl < maxLossInTrade)
+        maxLossInTrade = netPnl;
       totalTrades += 1;
       tradesForDay += 1;
       cumulativePnL += netPnl;
@@ -1330,6 +1338,10 @@ async function runSupertrendBullPutSingleRunBTC(params) {
     losses,
     breakeven,
     cumulativePnL: Number(cumulativePnL.toFixed(2)),
+    maxProfitInTrade:
+      maxProfitInTrade === null ? null : Number(maxProfitInTrade.toFixed(2)),
+    maxLossInTrade:
+      maxLossInTrade === null ? null : Number(maxLossInTrade.toFixed(2)),
     winRatePct: totalTrades
       ? Number(((wins / totalTrades) * 100).toFixed(2))
       : 0,
@@ -1457,6 +1469,8 @@ exports.SupertrendBullPutSpreadMainSLTPBTCController = expressAsyncHandler(
         winRatePct: 0,
         lossRatePct: 0,
         avgPnLPerTrade: 0,
+        maxProfitInTrade: null,
+        maxLossInTrade: null,
       });
 
       const foldAgg = (agg, s) => {
@@ -1464,11 +1478,31 @@ exports.SupertrendBullPutSpreadMainSLTPBTCController = expressAsyncHandler(
         agg.wins += s.wins;
         agg.losses += s.losses;
         agg.cumulativePnL += num(s.cumulativePnL, 0);
+        if (s.maxProfitInTrade !== null && s.maxProfitInTrade !== undefined) {
+          agg.maxProfitInTrade =
+            agg.maxProfitInTrade === null
+              ? num(s.maxProfitInTrade)
+              : Math.max(agg.maxProfitInTrade, num(s.maxProfitInTrade));
+        }
+        if (s.maxLossInTrade !== null && s.maxLossInTrade !== undefined) {
+          agg.maxLossInTrade =
+            agg.maxLossInTrade === null
+              ? num(s.maxLossInTrade)
+              : Math.min(agg.maxLossInTrade, num(s.maxLossInTrade));
+        }
         return agg;
       };
 
       const finalizeAgg = (agg) => {
         agg.cumulativePnL = Number(agg.cumulativePnL.toFixed(2));
+        agg.maxProfitInTrade =
+          agg.maxProfitInTrade === null
+            ? null
+            : Number(agg.maxProfitInTrade.toFixed(2));
+        agg.maxLossInTrade =
+          agg.maxLossInTrade === null
+            ? null
+            : Number(agg.maxLossInTrade.toFixed(2));
         agg.breakeven = Math.max(agg.totalTrades - agg.wins - agg.losses, 0);
         agg.winRatePct = agg.totalTrades
           ? Number(((agg.wins / agg.totalTrades) * 100).toFixed(2))
