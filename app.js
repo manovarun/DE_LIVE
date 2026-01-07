@@ -9,13 +9,7 @@ const connectDB = require('./db');
 
 connectDB();
 
-const straddleRouter = require('./routes/straddle');
-const strangleRouter = require('./routes/strangle');
-const socketRouter = require('./routes/socket');
-const shortRouter = require('./routes/short');
-const longRouter = require('./routes/long');
-const orderRouter = require('./routes/order');
-const backtestRouter = require('./routes/backtest');
+const tickerRouter = require('./routes/backtest');
 
 const app = express();
 
@@ -29,13 +23,7 @@ app.use(express.urlencoded({ extended: false }));
 app.use(cookieParser());
 app.use(express.static(path.join(__dirname, 'public')));
 
-app.use('/api/straddle', straddleRouter);
-app.use('/api/strangle', strangleRouter);
-app.use('/api/socket', socketRouter);
-app.use('/api/short', shortRouter);
-app.use('/api/long', longRouter);
-app.use('/api/order', orderRouter);
-app.use('/api/backtest', backtestRouter);
+app.use('/api/backtest', tickerRouter);
 
 app.use(GlobalErrorHandler);
 
