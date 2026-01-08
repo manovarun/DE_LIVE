@@ -143,7 +143,6 @@ async function lastTickOnOrBefore(optColl, instrument, atUTC) {
     .next();
 }
 
-
 async function firstTickBetween(optColl, instrument, fromUTC, toUTC) {
   return await optColl
     .find(
@@ -270,7 +269,6 @@ async function fetchOptionChainFromTicks({
   return { puts, calls };
 }
 
-
 // -----------------------------------------------------------------------------
 // AUTO expiry picker (daily expiry) from option ticks
 // - meta.expiry is expected to be "YYYY-MM-DD"
@@ -323,7 +321,9 @@ async function pickAutoExpiryForEntry({
     });
   }
 
-  expiries = (expiries || []).filter((e) => /^\d{4}-\d{2}-\d{2}$/.test(String(e)));
+  expiries = (expiries || []).filter((e) =>
+    /^\d{4}-\d{2}-\d{2}$/.test(String(e))
+  );
   expiries.sort(); // lexical works for YYYY-MM-DD
 
   if (!expiries.length) return null;
@@ -332,7 +332,6 @@ async function pickAutoExpiryForEntry({
   // nearest available expiry on/after baseDate
   return expiries[0];
 }
-
 
 // ATM selection for PUT ladder (prefer strike <= underlying on tie)
 function pickAtmPutIndex(puts, underlying) {
@@ -656,10 +655,9 @@ async function buildBtcFuturesSupertrendByDate({
         // Sample distinct symbols / timeIntervals (limited) for quick inspection
         try {
           const symRows = await coll
-            .aggregate(
-              [{ $group: { _id: '$stockSymbol' } }, { $limit: 25 }],
-              { allowDiskUse: true }
-            )
+            .aggregate([{ $group: { _id: '$stockSymbol' } }, { $limit: 25 }], {
+              allowDiskUse: true,
+            })
             .toArray();
           debug.symbolsSample = symRows.map((r) => r._id).filter(Boolean);
         } catch (_) {
@@ -685,7 +683,11 @@ async function buildBtcFuturesSupertrendByDate({
         }
 
         console.log(
-          `[BTC_ST] Available candle range for ${stockSymbol} ${timeInterval}: ${first?.ts || 'NA'} -> ${last?.ts || 'NA'} | collExists=${exists} estCount=${estCount} countSym=${countSym} countSymTf=${countSymTf}`
+          `[BTC_ST] Available candle range for ${stockSymbol} ${timeInterval}: ${
+            first?.ts || 'NA'
+          } -> ${
+            last?.ts || 'NA'
+          } | collExists=${exists} estCount=${estCount} countSym=${countSym} countSymTf=${countSymTf}`
         );
       } catch (e) {
         console.log(`[BTC_ST] Range lookup failed: ${e?.message || e}`);
@@ -790,7 +792,9 @@ async function runSupertrendBearCallSingleRunBTC(params) {
     throw new Error('fromDate and toDate are required.');
   }
 
-  const expiryModeNorm = String(expiryMode || 'FIXED').trim().toUpperCase();
+  const expiryModeNorm = String(expiryMode || 'FIXED')
+    .trim()
+    .toUpperCase();
   if (expiryModeNorm !== 'FIXED' && expiryModeNorm !== 'AUTO_DAILY') {
     throw new Error(
       `Unsupported expiryMode "${expiryMode}". Use "FIXED" or "AUTO_DAILY".`
@@ -822,20 +826,21 @@ async function runSupertrendBearCallSingleRunBTC(params) {
   const optColl = db.collection(OPT_TICKS_COLL);
 
   // Build ST candles from futures candles
-  const { candlesByDate, debug: candlesDebug } = await buildBtcFuturesSupertrendByDate({
-    db,
-    fromDate,
-    toDate,
-    stockSymbol,
-    timeInterval,
-    fromTime,
-    toTime,
-    weekDays,
-    timezone,
-    atrPeriod,
-    multiplier,
-    changeAtrCalculation,
-  });
+  const { candlesByDate, debug: candlesDebug } =
+    await buildBtcFuturesSupertrendByDate({
+      db,
+      fromDate,
+      toDate,
+      stockSymbol,
+      timeInterval,
+      fromTime,
+      toTime,
+      weekDays,
+      timezone,
+      atrPeriod,
+      multiplier,
+      changeAtrCalculation,
+    });
 
   if (VERBOSE && candlesDebug) {
     console.log(`[${TAG}] Candles debug:`, candlesDebug);
@@ -882,7 +887,6 @@ async function runSupertrendBearCallSingleRunBTC(params) {
   let wins = 0;
   let losses = 0;
   let cumulativePnL = 0;
-
 
   // Highest profit / highest loss per-trade (PnL after qty multiplier)
   let maxProfitInTrade = null;
@@ -948,7 +952,8 @@ async function runSupertrendBearCallSingleRunBTC(params) {
         tradesForDay === 0
       ) {
         const fallbackIdx = dayCandles.findIndex(
-          (c, idx) => idx >= scanStartIdx && getSupertrendDirection(c) === 'DOWN'
+          (c, idx) =>
+            idx >= scanStartIdx && getSupertrendDirection(c) === 'DOWN'
         );
         if (fallbackIdx !== -1) {
           entryIdx = fallbackIdx;
@@ -1039,7 +1044,13 @@ async function runSupertrendBearCallSingleRunBTC(params) {
           results.push({
             date: currentDate,
             trade: { took: false, reason: 'NO_AUTO_EXPIRY_FOUND' },
-            meta: { stockSymbol, timeInterval, expiryMode: expiryModeNorm, expiryDaysOut, expiryLookaheadDays },
+            meta: {
+              stockSymbol,
+              timeInterval,
+              expiryMode: expiryModeNorm,
+              expiryDaysOut,
+              expiryLookaheadDays,
+            },
           });
           scanStartIdx = exitIdx + 1;
           continue;
@@ -1055,7 +1066,12 @@ async function runSupertrendBearCallSingleRunBTC(params) {
         results.push({
           date: currentDate,
           trade: { took: false, reason: 'NO_CALL_CHAIN' },
-          meta: { expiry: expiryUsed, stockSymbol, timeInterval, expiryMode: expiryModeNorm },
+          meta: {
+            expiry: expiryUsed,
+            stockSymbol,
+            timeInterval,
+            expiryMode: expiryModeNorm,
+          },
         });
         scanStartIdx = exitIdx + 1;
         continue;
@@ -1253,10 +1269,14 @@ async function runSupertrendBearCallSingleRunBTC(params) {
 
       const netPnl = netPoints * q;
 
-
       // Track best/worst trade PnL
-      if (maxProfitInTrade === null || netPnl > maxProfitInTrade) maxProfitInTrade = netPnl;
-      if (maxLossInTrade === null || netPnl < maxLossInTrade) maxLossInTrade = netPnl;
+      if (netPnl > 0) {
+        if (maxProfitInTrade === null || netPnl > maxProfitInTrade)
+          maxProfitInTrade = netPnl;
+      } else if (netPnl < 0) {
+        if (maxLossInTrade === null || netPnl < maxLossInTrade)
+          maxLossInTrade = netPnl;
+      }
       totalTrades += 1;
       tradesForDay += 1;
       cumulativePnL += netPnl;
@@ -1368,8 +1388,10 @@ async function runSupertrendBearCallSingleRunBTC(params) {
     losses,
     breakeven,
     cumulativePnL: Number(cumulativePnL.toFixed(2)),
-    maxProfitInTrade: maxProfitInTrade === null ? null : Number(maxProfitInTrade.toFixed(2)),
-    maxLossInTrade: maxLossInTrade === null ? null : Number(maxLossInTrade.toFixed(2)),
+    maxProfitInTrade:
+      maxProfitInTrade === null ? null : Number(maxProfitInTrade.toFixed(2)),
+    maxLossInTrade:
+      maxLossInTrade === null ? null : Number(maxLossInTrade.toFixed(2)),
     winRatePct: totalTrades
       ? Number(((wins / totalTrades) * 100).toFixed(2))
       : 0,
@@ -1507,22 +1529,30 @@ exports.SupertrendBearCallSpreadMainSLTPBTCController = expressAsyncHandler(
         agg.losses += s.losses;
         agg.cumulativePnL += num(s.cumulativePnL, 0);
         if (s.maxProfitInTrade !== null && s.maxProfitInTrade !== undefined) {
-          agg.maxProfitInTrade = agg.maxProfitInTrade === null
-            ? num(s.maxProfitInTrade)
-            : Math.max(agg.maxProfitInTrade, num(s.maxProfitInTrade));
+          agg.maxProfitInTrade =
+            agg.maxProfitInTrade === null
+              ? num(s.maxProfitInTrade)
+              : Math.max(agg.maxProfitInTrade, num(s.maxProfitInTrade));
         }
         if (s.maxLossInTrade !== null && s.maxLossInTrade !== undefined) {
-          agg.maxLossInTrade = agg.maxLossInTrade === null
-            ? num(s.maxLossInTrade)
-            : Math.min(agg.maxLossInTrade, num(s.maxLossInTrade));
+          agg.maxLossInTrade =
+            agg.maxLossInTrade === null
+              ? num(s.maxLossInTrade)
+              : Math.min(agg.maxLossInTrade, num(s.maxLossInTrade));
         }
         return agg;
       };
 
       const finalizeAgg = (agg) => {
         agg.cumulativePnL = Number(agg.cumulativePnL.toFixed(2));
-        agg.maxProfitInTrade = agg.maxProfitInTrade === null ? null : Number(agg.maxProfitInTrade.toFixed(2));
-        agg.maxLossInTrade = agg.maxLossInTrade === null ? null : Number(agg.maxLossInTrade.toFixed(2));
+        agg.maxProfitInTrade =
+          agg.maxProfitInTrade === null
+            ? null
+            : Number(agg.maxProfitInTrade.toFixed(2));
+        agg.maxLossInTrade =
+          agg.maxLossInTrade === null
+            ? null
+            : Number(agg.maxLossInTrade.toFixed(2));
         agg.breakeven = Math.max(agg.totalTrades - agg.wins - agg.losses, 0);
         agg.winRatePct = agg.totalTrades
           ? Number(((agg.wins / agg.totalTrades) * 100).toFixed(2))
@@ -1585,9 +1615,8 @@ exports.SupertrendBearCallSpreadMainSLTPBTCController = expressAsyncHandler(
           timeExitHHmm: r.timeExitHHmm || payload.timeExitHHmm || null,
         };
 
-        const { summary, results, debug } = await runSupertrendBearCallSingleRunBTC(
-          resolved
-        );
+        const { summary, results, debug } =
+          await runSupertrendBearCallSingleRunBTC(resolved);
 
         runsOutput.push({
           index: i,

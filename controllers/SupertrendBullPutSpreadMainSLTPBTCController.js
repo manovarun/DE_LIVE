@@ -1223,10 +1223,13 @@ async function runSupertrendBullPutSingleRunBTC(params) {
       const netPnl = netPoints * q;
 
       // Track best/worst trade PnL
-      if (maxProfitInTrade === null || netPnl > maxProfitInTrade)
-        maxProfitInTrade = netPnl;
-      if (maxLossInTrade === null || netPnl < maxLossInTrade)
-        maxLossInTrade = netPnl;
+      if (netPnl > 0) {
+        if (maxProfitInTrade === null || netPnl > maxProfitInTrade)
+          maxProfitInTrade = netPnl;
+      } else if (netPnl < 0) {
+        if (maxLossInTrade === null || netPnl < maxLossInTrade)
+          maxLossInTrade = netPnl;
+      }
       totalTrades += 1;
       tradesForDay += 1;
       cumulativePnL += netPnl;
