@@ -7,11 +7,26 @@ const logger = require('morgan');
 const GlobalErrorHandler = require('./controllers/ErrorController');
 const connectDB = require('./db');
 
-connectDB();
+const dbReadyPromise = Promise.resolve(connectDB());
 
 const tickerRouter = require('./routes/backtest');
+const {
+  startSuperTrendBearCallSpreadPaperTradeBTCron,
+} = require('./controllers/SuperTrendBearCallSpreadPaperTradeBTCController');
 
 const app = express();
+
+// Start cron ONLY after Mongo is connected (connectDB() is async; without await you can race).
+dbReadyPromise
+  .then(() => {
+    startSuperTrendBearCallSpreadPaperTradeBTCron();
+  })
+  .catch((e) => {
+    console.error(
+      '[BOOT] MongoDB connection failed. Paper cron not started.',
+      e
+    );
+  });
 
 // view engine setup
 app.set('views', path.join(__dirname, 'views'));

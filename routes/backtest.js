@@ -1,14 +1,11 @@
 const express = require('express');
+
 const {
-  SupertrendBullPutSpreadMainSLTPBTCController,
-} = require('../controllers/SupertrendBullPutSpreadMainSLTPBTCController');
-const {
-  SupertrendBearCallSpreadMainSLTPBTCController,
-} = require('../controllers/SupertrendBearCallSpreadMainSLTPBTCController');
+  SuperTrendBearCallSpreadPaperTradeBTCController,
+} = require('../controllers/SuperTrendBearCallSpreadPaperTradeBTCController');
 
 const router = express.Router();
 
-router.post('/btc-st-ce', SupertrendBearCallSpreadMainSLTPBTCController);
-router.post('/btc-st-pe', SupertrendBullPutSpreadMainSLTPBTCController);
+router.post('/st-bcs-paper', SuperTrendBearCallSpreadPaperTradeBTCController);
 
 module.exports = router;
