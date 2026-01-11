@@ -141,6 +141,14 @@ const PNL_POLL_MS = Math.max(
   Number(process.env.SUPERTREND_BCS_PAPER_PNL_POLL_MS || 15000)
 );
 
+// Heartbeat: periodic status line so you can confirm the cron loop is running.
+// Set SUPERTREND_BCS_PAPER_HEARTBEAT_MS=0 to disable.
+const HEARTBEAT_MS_RAW = Number(
+  process.env.SUPERTREND_BCS_PAPER_HEARTBEAT_MS || 60000
+);
+const HEARTBEAT_MS =
+  HEARTBEAT_MS_RAW <= 0 ? 0 : Math.max(1000, HEARTBEAT_MS_RAW);
+
 // Position sizing for BTC: treat LOT_SIZE as contract_value (e.g., 0.001 BTC) and LOTS as number of contracts
 const LOT_SIZE = Number(process.env.SUPERTREND_BCS_PAPER_LOT_SIZE || 0.001);
 const LOTS = Math.max(1, Number(process.env.SUPERTREND_BCS_PAPER_LOTS || 1));
@@ -662,6 +670,65 @@ async function getOptionCollectionForNow(db) {
 let cronTask = null;
 let cronInFlight = false;
 
+// Heartbeat window stats (operational visibility)
+let heartbeatTimer = null;
+const hb = {
+  windowStartMs: Date.now(),
+  loops: 0,
+  openSeen: 0,
+  entered: 0,
+  exited: 0,
+  skips: {},
+  lastCandleTs: null,
+  lastSignal: 'NONE',
+};
+
+function hbIncSkip(reason) {
+  const r = reason || 'NA';
+  hb.skips[r] = (hb.skips[r] || 0) + 1;
+}
+
+function hbSkipsToString() {
+  const entries = Object.entries(hb.skips);
+  if (!entries.length) return 'NA';
+  // sort desc by count
+  entries.sort((a, b) => b[1] - a[1]);
+  return entries.map(([k, v]) => `${k}=${v}`).join(',');
+}
+
+function hbResetWindow() {
+  hb.windowStartMs = Date.now();
+  hb.loops = 0;
+  hb.openSeen = 0;
+  hb.entered = 0;
+  hb.exited = 0;
+  hb.skips = {};
+}
+
+function startHeartbeatIfNeeded() {
+  if (heartbeatTimer) return;
+  if (!HEARTBEAT_MS) return;
+
+  // One-time hint for where to look for logs
+  appendPaperLog(`Paper log file: ${PAPER_LOG_DIR}`);
+  info(`Paper log file: ${PAPER_LOG_DIR}`);
+
+  heartbeatTimer = setInterval(() => {
+    const elapsedMs = Date.now() - hb.windowStartMs;
+    const elapsedSec = Math.max(1, Math.round(elapsedMs / 1000));
+    const line = `🧾 Last ${elapsedSec}s | loops=${hb.loops} openSeen=${
+      hb.openSeen
+    } entered=${hb.entered} exited=${
+      hb.exited
+    } skips=${hbSkipsToString()} lastCandleTs=${
+      hb.lastCandleTs || 'NA'
+    } lastSignal=${hb.lastSignal || 'NONE'}`;
+    appendPaperLog(line);
+    info(line);
+    hbResetWindow();
+  }, HEARTBEAT_MS);
+}
+
 const dailyTradeCount = new Map(); // key: YYYY-MM-DD -> count
 
 function incDailyTradeCount(dayStr) {
@@ -687,94 +754,36 @@ function resetOldDailyCounts(keepDays = 3) {
 // =====================
 
 async function findOpenSpreadForExpiry(expiryStr) {
-  const filter = {
+  if (!SupertrendBcsPaperSpread) return null;
+  return SupertrendBcsPaperSpread.findOne({
     strategy: STRATEGY,
     stockName: STOCK_NAME,
     stockSymbol: STOCK_SYMBOL,
     expiry: expiryStr,
     status: 'OPEN',
-  };
-
-  const db = getDb();
-  const coll = db.collection('SupertrendBcsPaperSpreads');
-  const doc = await findOneSorted(coll, filter, { createdAt: -1 });
-
-  // Safety: if a stale/malformed OPEN doc exists (from older schema), auto-close it
-  if (doc && doc.status === 'OPEN') {
-    const hasMain = !!(doc.main && doc.main.symbol);
-    const hasHedge = !!(doc.hedge && doc.hedge.symbol);
-    // Support both old schema (entry.mainEntry/hedgeEntry) and current schema
-    // (entry.time + main.entry + hedge.entry)
-    const hasEntryOld = !!(
-      doc.entry &&
-      doc.entry.mainEntry &&
-      doc.entry.hedgeEntry
-    );
-
-    const hasEntryNew = !!(
-      doc.entry &&
-      doc.entry.time &&
-      doc.main &&
-      doc.main.entry &&
-      doc.hedge &&
-      doc.hedge.entry
-    );
-
-    const hasEntry = hasEntryOld || hasEntryNew;
-
-    if (!hasMain || !hasHedge || !hasEntry) {
-      const now = new Date();
-      const nowIst = moment.tz(now, TZ).toISOString(true);
-      await coll.updateOne(
-        { _id: doc._id },
-        {
-          $set: {
-            status: 'CLOSED',
-            updatedAt: now,
-            // IMPORTANT: do not use dot-paths under exit when exit is null
-            // (MongoDB will error: "Cannot create field ... in element {exit: null}")
-            exit: {
-              reason: 'INVALID_OPEN_DOC',
-              time: nowIst,
-            },
-          },
-        }
-      );
-      return null;
-    }
-  }
-
-  return doc;
+  }).sort({ createdAt: -1 });
 }
 
 async function createSpreadDoc(doc) {
+  if (SupertrendBcsPaperSpread) {
+    return SupertrendBcsPaperSpread.create(doc);
+  }
+
+  // Raw fallback
   const db = getDb();
   const coll = db.collection('SupertrendBcsPaperSpreads');
-
-  const now = new Date();
-  const toInsert = {
-    ...doc,
-    createdAt: doc.createdAt || now,
-    updatedAt: doc.updatedAt || now,
-  };
-
-  const res = await coll.insertOne(toInsert);
-  return { ...toInsert, _id: res.insertedId };
+  const res = await coll.insertOne(doc);
+  return { ...doc, _id: res.insertedId };
 }
 
 async function updateSpreadDoc(id, patch) {
+  if (SupertrendBcsPaperSpread) {
+    await SupertrendBcsPaperSpread.updateOne({ _id: id }, { $set: patch });
+    return;
+  }
   const db = getDb();
   const coll = db.collection('SupertrendBcsPaperSpreads');
-
-  let _id = id;
-  try {
-    // tolerate string ids
-    if (typeof id === 'string' && mongoose?.Types?.ObjectId?.isValid(id)) {
-      _id = new mongoose.Types.ObjectId(id);
-    }
-  } catch (_) {}
-
-  await coll.updateOne({ _id }, { $set: { ...patch, updatedAt: new Date() } });
+  await coll.updateOne({ _id: id }, { $set: patch });
 }
 
 function computeSpreadPnl({ mainEntry, mainExit, hedgeEntry, hedgeExit, qty }) {
@@ -940,9 +949,16 @@ async function maybeEnterTrade(nowIst) {
   }
 
   const signalCandle = st.lastConfirmedStCandle;
-  const sellSignal = !!(
-    signalCandle?.supertrend?.sellSignal ?? signalCandle?.sellSignal
-  );
+  const sellSignal = !!signalCandle.sellSignal;
+
+  // Heartbeat: surface the last candle we processed + most recent signal state
+  try {
+    const ts = signalCandle?.ts || signalCandle?.datetime;
+    if (ts) hb.lastCandleTs = new Date(ts).toISOString();
+    hb.lastSignal = sellSignal ? 'SELL' : 'NONE';
+  } catch (_) {
+    // no-op
+  }
 
   if (!FORCE_ENTRY && !sellSignal) {
     // For BCS, we enter on sellSignal (trend flips down)
@@ -1238,11 +1254,24 @@ async function maybeExitOpenSpread(nowIst, openSpread) {
 
     // Find first buySignal after entry signal candle
     const buyCandle = (st.stCandles || []).find((c) => {
-      if (!(c?.supertrend?.buySignal ?? c?.buySignal)) return false;
+      if (!c.buySignal) return false;
       const tsMs = new Date(c.ts).getTime();
       if (!entryCandleTsMs) return tsMs >= entryUtc.getTime();
       return tsMs > entryCandleTsMs;
     });
+
+    // Heartbeat: last candle processed + most recent signal state while monitoring open trade
+    try {
+      const ts =
+        buyCandle?.ts ||
+        buyCandle?.datetime ||
+        st?.lastConfirmedStCandle?.ts ||
+        st?.lastConfirmedStCandle?.datetime;
+      if (ts) hb.lastCandleTs = new Date(ts).toISOString();
+      hb.lastSignal = buyCandle ? 'BUY' : 'NONE';
+    } catch (e) {
+      // ignore heartbeat errors
+    }
 
     if (buyCandle) {
       // Exit at latest tick (main & hedge) at or before now
@@ -1368,15 +1397,22 @@ async function paperLoopOnce() {
   const nowIst = moment().tz(TZ);
   const expiry = nowIst.format('YYYY-MM-DD');
 
+  hb.loops += 1;
+
   // If open spread, try exit first
   const open = await findOpenSpreadForExpiry(expiry);
   if (open) {
-    await maybeExitOpenSpread(nowIst, open);
+    hb.openSeen += 1;
+    const ex = await maybeExitOpenSpread(nowIst, open);
+    if (ex && ex.exited) hb.exited += 1;
+    else if (ex && ex.reason) hbIncSkip(`EXIT_${ex.reason}`);
     return;
   }
 
   // Otherwise try enter
-  await maybeEnterTrade(nowIst);
+  const en = await maybeEnterTrade(nowIst);
+  if (en && en.took) hb.entered += 1;
+  else if (en && en.reason) hbIncSkip(en.reason);
 }
 
 // =====================
@@ -1452,6 +1488,9 @@ function startSuperTrendBearCallSpreadPaperTradeBTCron() {
 
   info(`Starting paper cron: ${expr} (TZ=${TZ})`);
   appendPaperLog(`Starting paper cron: ${expr} (TZ=${TZ})`);
+
+  // Heartbeat so you can see progress even when there are no entries/exits.
+  startHeartbeatIfNeeded();
 
   cronTask = cron.schedule(
     expr,
