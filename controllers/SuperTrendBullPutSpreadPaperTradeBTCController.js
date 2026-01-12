@@ -51,7 +51,7 @@ try {
 
 let SupertrendBpsPaperSpread = null;
 try {
-  // NIFTY controller exports {SupertrendBpsPaperSpread, SupertrendBpsPaperTrade}
+  // NIFTY controller exports {SupertrendBpsPaperSpread, SupertrendBcsPaperTrade}
   ({ SupertrendBpsPaperSpread } = require('../models/SupertrendBpsPaperTrade'));
 } catch {
   // optional fallback to raw inserts
@@ -83,6 +83,10 @@ const INDEX_TF = process.env.SUPERTREND_BPS_PAPER_INDEX_TF || 'M3';
 const FROM_TIME = process.env.SUPERTREND_BPS_PAPER_FROM_TIME || '00:00';
 const SQUARE_OFF_TIME =
   process.env.SUPERTREND_BPS_PAPER_SQUARE_OFF_TIME || '23:59';
+
+// Daily expiry cutoff (IST) for Delta BTC daily options. After this time, the "active" expiry rolls to next calendar day.
+const DAILY_EXPIRY_CUTOFF =
+  process.env.SUPERTREND_BPS_PAPER_DAILY_EXPIRY_CUTOFF || '17:30';
 
 const STOPLOSS_PCT = Number(
   process.env.SUPERTREND_BPS_PAPER_STOPLOSS_PCT || 5000
@@ -139,6 +143,11 @@ const ALLOW_FORMING_CANDLE =
 const PNL_POLL_MS = Math.max(
   2000,
   Number(process.env.SUPERTREND_BPS_PAPER_PNL_POLL_MS || 15000)
+);
+
+const HEARTBEAT_MS = Math.max(
+  0,
+  Number(process.env.SUPERTREND_BPS_PAPER_HEARTBEAT_MS || 15000)
 );
 
 // Position sizing for BTC: treat LOT_SIZE as contract_value (e.g., 0.001 BTC) and LOTS as number of contracts
@@ -234,6 +243,21 @@ function hhmmToMoment(dateYYYYMMDD, hhmm, tz = TZ) {
     .minute(mm)
     .second(0)
     .millisecond(0);
+}
+
+function getExpiryEndIst(expiryStr, tz = TZ) {
+  // expiryStr is expected in YYYY-MM-DD (configured timezone)
+  return hhmmToMoment(expiryStr, DAILY_EXPIRY_CUTOFF, tz);
+}
+
+function getActiveDailyExpiry(nowIst) {
+  const todayStr = nowIst.format('YYYY-MM-DD');
+  const cutoffIst = hhmmToMoment(todayStr, DAILY_EXPIRY_CUTOFF, TZ);
+  // After cutoff, current day's contract is expired; roll to next calendar day expiry.
+  if (nowIst.isSameOrAfter(cutoffIst)) {
+    return nowIst.clone().add(1, 'day').format('YYYY-MM-DD');
+  }
+  return todayStr;
 }
 
 function weekdayKey(m) {
@@ -438,12 +462,11 @@ async function buildTodaySupertrend({
     (c) => new Date(c.ts).getTime() <= lastConfirmedTs
   );
 
-  const stCandlesRaw = addSupertrendToCandles(
-    confirmedCandles,
+  const stCandlesRaw = addSupertrendToCandles(confirmedCandles, {
     atrPeriod,
     multiplier,
-    changeAtrCalculation
-  );
+    changeAtrCalculation,
+  });
 
   const stCandles = enrichSupertrendCandles(
     stCandlesRaw,
@@ -484,55 +507,48 @@ function parseMoneyness(m) {
   );
 }
 
-function pickAtmIndex(strikes, underlying, optionType = 'C') {
+function pickAtmIndex(strikes, underlying) {
   if (!strikes || strikes.length === 0) return -1;
-
-  const ot = String(optionType || 'C').toUpperCase().trim();
-
   let bestIdx = 0;
   let bestDiff = Math.abs(strikes[0] - underlying);
-
   for (let i = 1; i < strikes.length; i += 1) {
     const d = Math.abs(strikes[i] - underlying);
-
     if (d < bestDiff) {
       bestDiff = d;
       bestIdx = i;
     } else if (d === bestDiff) {
-      // tie-break:
-      // - CALL: prefer strike >= underlying (slightly OTM ATM) to reduce ITM bias
-      // - PUT : prefer strike <= underlying (slightly OTM ATM) to reduce ITM bias
+      // tie-break: prefer strike >= underlying (slightly OTM ATM) to reduce ITM bias
       const cur = strikes[i];
       const best = strikes[bestIdx];
-
-      if (ot === 'P') {
-        if (best > underlying && cur <= underlying) bestIdx = i;
-      } else {
-        if (best < underlying && cur >= underlying) bestIdx = i;
-      }
+      if (best < underlying && cur >= underlying) bestIdx = i;
     }
   }
-
   return bestIdx;
 }
 
-function pickStrikeByMoneyness(strikes, underlying, moneyness, optionType = 'C') {
+function pickStrikeByMoneyness(
+  strikes,
+  underlying,
+  moneyness,
+  optionType = 'C'
+) {
   const { kind, n } = parseMoneyness(moneyness);
-  const atmIdx = pickAtmIndex(strikes, underlying, optionType);
+  const atmIdx = pickAtmIndex(strikes, underlying);
   if (atmIdx < 0) return null;
 
-  const ot = String(optionType || 'C').toUpperCase().trim();
+  // For CALLs:
+  //   ITM => lower strikes (idx decreases), OTM => higher strikes (idx increases)
+  // For PUTs:
+  //   ITM => higher strikes (idx increases), OTM => lower strikes (idx decreases)
+  const isPut = String(optionType || 'C').toUpperCase() === 'P';
 
   let idx = atmIdx;
-
-  // For CALL (C): ITM strikes are below ATM, OTM strikes are above ATM
-  // For PUT  (P): ITM strikes are above ATM, OTM strikes are below ATM
-  if (ot === 'P') {
-    if (kind === 'ITM') idx = atmIdx + n;
-    if (kind === 'OTM') idx = atmIdx - n;
-  } else {
+  if (!isPut) {
     if (kind === 'ITM') idx = atmIdx - n;
     if (kind === 'OTM') idx = atmIdx + n;
+  } else {
+    if (kind === 'ITM') idx = atmIdx + n;
+    if (kind === 'OTM') idx = atmIdx - n;
   }
 
   if (idx < 0 || idx >= strikes.length) return null;
@@ -684,6 +700,7 @@ async function getOptionCollectionForNow(db) {
 
 let cronTask = null;
 let cronInFlight = false;
+let heartbeatTimer = null;
 
 const dailyTradeCount = new Map(); // key: YYYY-MM-DD -> count
 
@@ -801,8 +818,8 @@ async function updateSpreadDoc(id, patch) {
 }
 
 function computeSpreadPnl({ mainEntry, mainExit, hedgeEntry, hedgeExit, qty }) {
-  const mainPoints = Number(mainEntry) - Number(mainExit); // short put: profit when premium falls
-  const hedgePoints = Number(hedgeExit) - Number(hedgeEntry); // long put: profit when premium rises
+  const mainPoints = Number(mainEntry) - Number(mainExit); // short leg: profit when premium falls
+  const hedgePoints = Number(hedgeExit) - Number(hedgeEntry); // long leg: profit when premium rises
   const netPoints = mainPoints + hedgePoints;
 
   const net = netPoints * qty;
@@ -923,13 +940,13 @@ async function maybeEnterTrade(nowIst) {
   if (nowIst.isSameOrAfter(squareOffIst))
     return { took: false, reason: 'AFTER_SQUAREOFF_TIME' };
 
-  // max trades/day guard
-  const taken = getDailyTradeCount(dayStr);
+  // expiry (daily): rolls to next calendar day after DAILY_EXPIRY_CUTOFF
+  const expiry = getActiveDailyExpiry(nowIst);
+
+  // max trades/day guard (keyed by active expiry)
+  const taken = getDailyTradeCount(expiry);
   if (taken >= MAX_TRADES_PER_DAY)
     return { took: false, reason: 'MAX_TRADES_REACHED' };
-
-  // expiry (daily)
-  const expiry = dayStr;
 
   const open = await findOpenSpreadForExpiry(expiry);
   if (open) return { took: false, reason: 'OPEN_SPREAD_EXISTS' };
@@ -1086,7 +1103,7 @@ async function maybeEnterTrade(nowIst) {
 
   const created = await createSpreadDoc(spreadDoc);
 
-  incDailyTradeCount(dayStr);
+  incDailyTradeCount(expiry);
 
   const line = `ENTRY expiry=${expiry} buySignal=${buySignal} underlying=${underlyingPrice.toFixed(
     1
@@ -1101,6 +1118,101 @@ async function maybeEnterTrade(nowIst) {
 
 async function maybeExitOpenSpread(nowIst, openSpread) {
   if (!openSpread || openSpread.status !== 'OPEN') return { exited: false };
+
+  // DAILY EXPIRY HANDLING:
+  // Delta BTC daily options expire at DAILY_EXPIRY_CUTOFF (IST) on their expiry date.
+  // If the contract is already expired as of nowIst, force-close the spread at the expiry cutoff time
+  // (best-effort: use latest available ticks at/before cutoff).
+  let expiryEndIst = null;
+  try {
+    expiryEndIst = getExpiryEndIst(openSpread.expiry, TZ);
+  } catch {
+    expiryEndIst = null;
+  }
+
+  if (expiryEndIst && nowIst.isSameOrAfter(expiryEndIst)) {
+    const entryIst = moment.tz(openSpread?.entry?.time, TZ);
+    const entryUtc = new Date(entryIst.clone().utc().valueOf());
+
+    const exitTickUtc = new Date(expiryEndIst.clone().utc().valueOf());
+    const exitIst = expiryEndIst.clone();
+
+    const db = getDb();
+
+    const optCollNames = await getOptionsCollectionsForRange(
+      db,
+      OPT_TICKS_PREFIX,
+      entryUtc,
+      exitTickUtc
+    );
+    const optColls = optCollNames.map((n) => db.collection(n));
+
+    const mainEntryPrice = Number(openSpread?.main?.entry?.price);
+    const hedgeEntryPrice = Number(openSpread?.hedge?.entry?.price);
+
+    let mainExitTick = null;
+    let hedgeExitTick = null;
+
+    for (let i = 0; i < optColls.length && !mainExitTick; i += 1) {
+      mainExitTick = await getLatestOptionTickBySymbol(optColls[i], {
+        symbol: openSpread.main.symbol,
+        atOrBeforeUtc: exitTickUtc,
+      });
+    }
+    for (let i = 0; i < optColls.length && !hedgeExitTick; i += 1) {
+      hedgeExitTick = await getLatestOptionTickBySymbol(optColls[i], {
+        symbol: openSpread.hedge.symbol,
+        atOrBeforeUtc: exitTickUtc,
+      });
+    }
+
+    const mainExitPriceRaw = Number(mainExitTick?.price);
+    const hedgeExitPriceRaw = Number(hedgeExitTick?.price);
+
+    const mainExitPrice = Number.isFinite(mainExitPriceRaw)
+      ? mainExitPriceRaw
+      : mainEntryPrice;
+    const hedgeExitPrice = Number.isFinite(hedgeExitPriceRaw)
+      ? hedgeExitPriceRaw
+      : hedgeEntryPrice;
+
+    const pnl = computeSpreadPnl({
+      mainEntry: mainEntryPrice,
+      mainExit: mainExitPrice,
+      hedgeEntry: hedgeEntryPrice,
+      hedgeExit: hedgeExitPrice,
+      qty: Number(openSpread?.config?.qty || QTY),
+    });
+
+    const reason =
+      Number.isFinite(mainExitPriceRaw) && Number.isFinite(hedgeExitPriceRaw)
+        ? 'EXPIRY'
+        : 'EXPIRY_NO_TICKS';
+
+    await updateSpreadDoc(openSpread._id, {
+      status: 'CLOSED',
+      updatedAt: new Date(),
+      exit: {
+        reason,
+        time: exitIst.toISOString(true),
+        tickTimeUtc: exitTickUtc,
+        main: { symbol: openSpread.main.symbol, price: mainExitPrice },
+        hedge: { symbol: openSpread.hedge.symbol, price: hedgeExitPrice },
+        expiryCutoff: DAILY_EXPIRY_CUTOFF,
+      },
+      pnl,
+    });
+
+    const line = `EXIT(${reason}) expiry=${openSpread.expiry} main=${
+      openSpread.main.symbol
+    }@${mainExitPrice} hedge=${
+      openSpread.hedge.symbol
+    }@${hedgeExitPrice} net=${pnl.net.toFixed(4)}`;
+    info(line);
+    appendPaperLog(line);
+
+    return { exited: true, reason, pnl };
+  }
 
   const dayStr = nowIst.format('YYYY-MM-DD');
   const squareOffIst = hhmmToMoment(dayStr, SQUARE_OFF_TIME, TZ);
@@ -1261,7 +1373,7 @@ async function maybeExitOpenSpread(nowIst, openSpread) {
       ? new Date(openSpread.entry.signalCandleTs).getTime()
       : null;
 
-    // Find first buySignal after entry signal candle
+    // Find first sellSignal after entry signal candle
     const sellCandle = (st.stCandles || []).find((c) => {
       if (!(c?.supertrend?.sellSignal ?? c?.sellSignal)) return false;
       const tsMs = new Date(c.ts).getTime();
@@ -1391,16 +1503,27 @@ async function maybeExitOpenSpread(nowIst, openSpread) {
 
 async function paperLoopOnce() {
   const nowIst = moment().tz(TZ);
-  const expiry = nowIst.format('YYYY-MM-DD');
 
-  // If open spread, try exit first
-  const open = await findOpenSpreadForExpiry(expiry);
+  const activeExpiry = getActiveDailyExpiry(nowIst);
+  const todayExpiry = nowIst.format('YYYY-MM-DD');
+
+  // If we are past the daily expiry cutoff, first attempt to close any OPEN spread
+  // that belongs to the now-expired (today) expiry.
+  if (todayExpiry !== activeExpiry) {
+    const expiredOpen = await findOpenSpreadForExpiry(todayExpiry);
+    if (expiredOpen) {
+      await maybeExitOpenSpread(nowIst, expiredOpen);
+      return;
+    }
+  }
+
+  // Active expiry flow
+  const open = await findOpenSpreadForExpiry(activeExpiry);
   if (open) {
     await maybeExitOpenSpread(nowIst, open);
     return;
   }
 
-  // Otherwise try enter
   await maybeEnterTrade(nowIst);
 }
 
@@ -1412,7 +1535,7 @@ const SuperTrendBullPutSpreadPaperTradeBTCController = expressAsyncHandler(
   async (req, res, next) => {
     try {
       const nowIst = moment().tz(TZ);
-      const expiry = nowIst.format('YYYY-MM-DD');
+      const expiry = getActiveDailyExpiry(nowIst);
 
       // run one loop (enter/exit)
       await paperLoopOnce();
@@ -1430,6 +1553,8 @@ const SuperTrendBullPutSpreadPaperTradeBTCController = expressAsyncHandler(
         open,
         config: {
           TZ,
+          DAILY_EXPIRY_CUTOFF,
+          HEARTBEAT_MS,
           CRON_EXPR,
           CRON_SECONDS,
           INDEX_TF,
@@ -1501,7 +1626,7 @@ function startSuperTrendBullPutSpreadPaperTradeBTCron() {
   setInterval(async () => {
     try {
       const nowIst = moment().tz(TZ);
-      const expiry = nowIst.format('YYYY-MM-DD');
+      const expiry = getActiveDailyExpiry(nowIst);
       const open = await findOpenSpreadForExpiry(expiry);
       if (!open) return;
 
@@ -1541,6 +1666,44 @@ function startSuperTrendBullPutSpreadPaperTradeBTCron() {
       // keep silent
     }
   }, PNL_POLL_MS);
+
+  // Heartbeat: lightweight status log (requested for ops visibility)
+  if (!heartbeatTimer && HEARTBEAT_MS > 0) {
+    heartbeatTimer = setInterval(async () => {
+      try {
+        const nowIst = moment().tz(TZ);
+        const activeExpiry = getActiveDailyExpiry(nowIst);
+        const todayExpiry = nowIst.format('YYYY-MM-DD');
+
+        let openActive = null;
+        let openExpired = null;
+
+        try {
+          openActive = await findOpenSpreadForExpiry(activeExpiry);
+          if (todayExpiry !== activeExpiry) {
+            openExpired = await findOpenSpreadForExpiry(todayExpiry);
+          }
+        } catch {
+          // ignore DB errors inside heartbeat
+        }
+
+        const line = `HEARTBEAT now=${nowIst.format(
+          'YYYY-MM-DD HH:mm:ss'
+        )} activeExpiry=${activeExpiry} cutoff=${DAILY_EXPIRY_CUTOFF} inFlight=${cronInFlight} trades(activeExpiry)=${getDailyTradeCount(
+          activeExpiry
+        )} openActive=${!!openActive} openExpired=${!!openExpired}`;
+        info(line);
+        appendPaperLog(line);
+      } catch {
+        // silent
+      }
+    }, HEARTBEAT_MS);
+
+    // Do not keep Node process alive solely for heartbeat
+    if (heartbeatTimer && typeof heartbeatTimer.unref === 'function') {
+      heartbeatTimer.unref();
+    }
+  }
 
   return cronTask;
 }
