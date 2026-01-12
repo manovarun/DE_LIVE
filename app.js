@@ -9,10 +9,13 @@ const connectDB = require('./db');
 
 const dbReadyPromise = Promise.resolve(connectDB());
 
-const tickerRouter = require('./routes/backtest');
+const tickerRouter = require('./routes/order');
 const {
   startSuperTrendBearCallSpreadPaperTradeBTCron,
 } = require('./controllers/SuperTrendBearCallSpreadPaperTradeBTCController');
+const {
+  startSuperTrendBullPutSpreadPaperTradeBTCron,
+} = require('./controllers/SuperTrendBullPutSpreadPaperTradeBTCController');
 
 const app = express();
 
@@ -20,6 +23,7 @@ const app = express();
 dbReadyPromise
   .then(() => {
     startSuperTrendBearCallSpreadPaperTradeBTCron();
+    startSuperTrendBullPutSpreadPaperTradeBTCron();
   })
   .catch((e) => {
     console.error(
