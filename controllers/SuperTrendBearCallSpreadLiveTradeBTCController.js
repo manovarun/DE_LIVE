@@ -21,6 +21,8 @@ const mongoose = require('mongoose');
 const crypto = require('crypto');
 const https = require('https');
 const { URL } = require('url');
+const fs = require('fs');
+const path = require('path');
 
 let expressAsyncHandler;
 try {
@@ -148,16 +150,17 @@ const HEARTBEAT_MS = Math.max(
   Number(process.env.SUPERTREND_BCS_LIVE_HEARTBEAT_MS || 15000)
 );
 
+// File logging (paper-controller parity)
+const LOG_DIR = process.env.SUPERTREND_BCS_LIVE_LOG_DIR || './logs/livetrade';
+const LOG_TO_FILE =
+  String(
+    process.env.SUPERTREND_BCS_LIVE_LOG_TO_FILE || 'false'
+  ).toLowerCase() === 'true';
+
 // Position sizing for BTC options on Delta: treat LOT_SIZE as contract size (e.g. 0.001) and LOTS as number of contracts
 const LOT_SIZE = Number(process.env.SUPERTREND_BCS_LIVE_LOT_SIZE || 0.001);
-const LOTS = Math.max(
-  1,
-  parseInt(process.env.SUPERTREND_BCS_LIVE_LOTS || '1', 10)
-);
-// Delta expects `size` as an integer number of contracts. We use LOTS for order size.
-const ORDER_SIZE = LOTS;
-// Keep BTC-notional qty for PnL scaling (paper-controller parity).
-const QTY = LOT_SIZE * ORDER_SIZE;
+const LOTS = Math.max(1, Number(process.env.SUPERTREND_BCS_LIVE_LOTS || 1));
+const QTY = LOT_SIZE * LOTS;
 
 // Delta REST
 const DELTA_BASE = (
@@ -180,25 +183,94 @@ const PRODUCT_CACHE_COLLECTION = 'DeltaProductCache';
 // Logging helpers
 // =====================
 
+let _logDirAbs = null;
+let _logFilePath = null;
+let _fileLoggingReady = false;
+
 function nowTs(tz = TZ) {
   return moment().tz(tz).format('YYYY-MM-DD HH:mm:ss');
 }
+
+function _resolveLogFilePath(now = null) {
+  const day = (now ? moment(now) : moment()).tz(TZ).format('YYYYMMDD');
+  const fname = `ST_BCS_BTC_LIVE_${day}.log`;
+  return path.join(_logDirAbs, fname);
+}
+
+function initFileLogger() {
+  if (!LOG_TO_FILE) return false;
+  try {
+    _logDirAbs = path.isAbsolute(LOG_DIR)
+      ? LOG_DIR
+      : path.join(process.cwd(), LOG_DIR);
+    fs.mkdirSync(_logDirAbs, { recursive: true });
+    _logFilePath = _resolveLogFilePath();
+    // touch file so folder + file are guaranteed to exist
+    fs.appendFileSync(_logFilePath, '');
+    _fileLoggingReady = true;
+    return true;
+  } catch (e) {
+    // eslint-disable-next-line no-console
+    console.error(
+      `[${nowTs()}] [ST_BCS_BTC_LIVE][WARN] File logging init failed (dir=${LOG_DIR}): ${
+        e && e.message ? e.message : e
+      }`
+    );
+    _fileLoggingReady = false;
+    return false;
+  }
+}
+
+function writeToFile(line) {
+  if (!LOG_TO_FILE || !_fileLoggingReady) return;
+  try {
+    const expected = _resolveLogFilePath();
+    if (_logFilePath !== expected) {
+      _logFilePath = expected; // day rollover
+      fs.appendFileSync(_logFilePath, '');
+    }
+    fs.appendFile(
+      _logFilePath,
+      `${line}
+`,
+      () => {}
+    );
+  } catch {
+    // silent
+  }
+}
+
 function info(msg) {
+  const line = `[${nowTs()}] [ST_BCS_BTC_LIVE] ${msg}`;
   // eslint-disable-next-line no-console
-  console.log(`[${nowTs()}] [ST_BCS_BTC_LIVE] ${msg}`);
+  console.log(line);
+  writeToFile(line);
 }
 function warn(msg) {
+  const line = `[${nowTs()}] [ST_BCS_BTC_LIVE][WARN] ${msg}`;
   // eslint-disable-next-line no-console
-  console.warn(`[${nowTs()}] [ST_BCS_BTC_LIVE][WARN] ${msg}`);
+  console.warn(line);
+  writeToFile(line);
 }
 function error(msg, err) {
+  const line = `[${nowTs()}] [ST_BCS_BTC_LIVE][ERROR] ${msg}`;
   // eslint-disable-next-line no-console
-  console.error(`[${nowTs()}] [ST_BCS_BTC_LIVE][ERROR] ${msg}`);
+  console.error(line);
+  writeToFile(line);
   if (err) {
     // eslint-disable-next-line no-console
     console.error(err);
+    try {
+      const errLine = err && err.stack ? String(err.stack) : String(err);
+      writeToFile(errLine);
+    } catch {
+      // silent
+    }
   }
 }
+
+// Initialize file logging at module load (no impact if disabled)
+initFileLogger();
 
 // =====================
 // DB helpers
@@ -260,22 +332,6 @@ function buildSortedQueryString(query) {
   const usp = new URLSearchParams();
   keys.forEach((k) => usp.append(k, String(query[k])));
   return `?${usp.toString()}`;
-}
-
-// client_order_id helper: must be <= 32 chars (Delta schema validation).
-function makeClientOrderId(prefix, runId, tag) {
-  const p = String(prefix || 'ST')
-    .replace(/[^A-Za-z0-9]/g, '')
-    .slice(0, 6);
-  const t = String(tag || 'X')
-    .replace(/[^A-Za-z0-9]/g, '')
-    .slice(0, 4);
-  const hash = crypto
-    .createHash('sha1')
-    .update(`${p}|${t}|${String(runId || '')}`)
-    .digest('hex'); // 40 chars
-  const maxHash = Math.max(6, 32 - (p.length + 1 + t.length + 1)); // leave room for separators
-  return `${p}_${t}_${hash.slice(0, maxHash)}`.slice(0, 32);
 }
 
 function httpRequestJson(method, urlStr, headers, bodyStr, timeoutMs) {
@@ -937,22 +993,6 @@ async function findOpenSpreadForExpiry(expiryStr) {
   );
 }
 
-async function findInFlightSpreadForExpiry(expiryStr) {
-  const db = getDb();
-  const coll = db.collection(SPREADS_COLLECTION);
-  return findOneSorted(
-    coll,
-    {
-      strategy: STRATEGY,
-      stockName: STOCK_NAME,
-      stockSymbol: STOCK_SYMBOL,
-      expiry: expiryStr,
-      status: { $in: ['OPEN', 'PENDING_ENTRY', 'PENDING_EXIT'] },
-    },
-    { createdAt: -1 }
-  );
-}
-
 // =====================
 // Live execution helpers
 // =====================
@@ -965,14 +1005,14 @@ async function executeEntry({ runId, expiry, underlyingPrice, legs, nowIst }) {
   const mainPid = await getProductIdBySymbol(mainSymbol);
 
   // Hedge first (BUY), then main (SELL)
-  const hedgeClientId = makeClientOrderId('STBCS', runId, 'HB');
-  const mainClientId = makeClientOrderId('STBCS', runId, 'MS');
+  const hedgeClientId = `${runId}-HEDGE-BUY`;
+  const mainClientId = `${runId}-MAIN-SELL`;
 
   const entryStart = Date.now();
   const hedgeOrder = await placeOrder({
     product_id: hedgePid,
     side: 'buy',
-    size: ORDER_SIZE,
+    size: QTY,
     order_type: 'market_order',
     reduce_only: false,
     client_order_id: hedgeClientId,
@@ -981,7 +1021,7 @@ async function executeEntry({ runId, expiry, underlyingPrice, legs, nowIst }) {
   const mainOrder = await placeOrder({
     product_id: mainPid,
     side: 'sell',
-    size: ORDER_SIZE,
+    size: QTY,
     order_type: 'market_order',
     reduce_only: false,
     client_order_id: mainClientId,
@@ -1041,13 +1081,13 @@ async function executeExit({ runId, open, reason, nowIst }) {
   const exitStart = Date.now();
 
   // Main first (BUY) to remove naked short exposure, then hedge (SELL)
-  const mainClientId = makeClientOrderId('STBCS', runId, 'MB');
-  const hedgeClientId = makeClientOrderId('STBCS', runId, 'HS');
+  const mainClientId = `${runId}-MAIN-BUY-EXIT`;
+  const hedgeClientId = `${runId}-HEDGE-SELL-EXIT`;
 
   const mainExitOrder = await placeOrder({
     product_id: mainPid,
     side: 'buy',
-    size: ORDER_SIZE,
+    size: QTY,
     order_type: 'market_order',
     reduce_only: true,
     client_order_id: mainClientId,
@@ -1056,7 +1096,7 @@ async function executeExit({ runId, open, reason, nowIst }) {
   const hedgeExitOrder = await placeOrder({
     product_id: hedgePid,
     side: 'sell',
-    size: ORDER_SIZE,
+    size: QTY,
     order_type: 'market_order',
     reduce_only: true,
     client_order_id: hedgeClientId,
@@ -1110,114 +1150,6 @@ async function executeExit({ runId, open, reason, nowIst }) {
 // Core trading loop
 // =====================
 
-async function resumePendingEntry(nowIst, pending) {
-  if (!pending || pending.status !== 'PENDING_ENTRY')
-    return { took: false, reason: 'NO_PENDING' };
-
-  // Optional cooldown
-  const nextAt = pending?.entryRetry?.nextAttemptAt
-    ? new Date(pending.entryRetry.nextAttemptAt)
-    : null;
-  if (nextAt && Date.now() < nextAt.getTime())
-    return { took: false, reason: 'PENDING_COOLDOWN' };
-
-  const runId = pending.runId;
-  const expiry = pending.expiry;
-  const underlyingPrice = Number(pending?.entry?.underlyingPrice);
-
-  const legs = {
-    main: {
-      symbol: pending?.main?.symbol,
-      optionType: pending?.main?.optionType,
-      strike: pending?.main?.strike,
-    },
-    hedge: {
-      symbol: pending?.hedge?.symbol,
-      optionType: pending?.hedge?.optionType,
-      strike: pending?.hedge?.strike,
-    },
-  };
-
-  if (!legs.main.symbol || !legs.hedge.symbol) {
-    await updateSpreadDoc(pending._id, {
-      status: 'CANCELLED',
-      exit: { time: nowIst.toISOString(), reason: 'PENDING_MISSING_LEGS' },
-    });
-    return { took: false, reason: 'PENDING_MISSING_LEGS' };
-  }
-
-  info(
-    `RESUME_PENDING_ENTRY expiry=${expiry} runId=${runId} main=${legs.main.symbol} hedge=${legs.hedge.symbol}`
-  );
-
-  try {
-    const exec = await executeEntry({
-      runId,
-      expiry,
-      underlyingPrice,
-      legs,
-      nowIst,
-    });
-
-    await updateSpreadDoc(pending._id, {
-      status: 'OPEN',
-      main: {
-        ...pending.main,
-        product_id: exec.main.product_id,
-        entry: {
-          ...(pending.main?.entry || {}),
-          price: exec.main.fillPrice,
-          time: nowIst.toISOString(),
-          orderId: exec.main.order.id,
-          clientOrderId: exec.main.order.client_order_id || null,
-        },
-      },
-      hedge: {
-        ...pending.hedge,
-        product_id: exec.hedge.product_id,
-        entry: {
-          ...(pending.hedge?.entry || {}),
-          price: exec.hedge.fillPrice,
-          time: nowIst.toISOString(),
-          orderId: exec.hedge.order.id,
-          clientOrderId: exec.hedge.order.client_order_id || null,
-        },
-      },
-      entryExecution: { tookMs: exec.tookMs, at: new Date() },
-      entryRetry: {
-        attempts: Number(pending?.entryRetry?.attempts || 0) + 1,
-        lastError: null,
-        nextAttemptAt: null,
-      },
-      dailyCounted: true,
-    });
-
-    if (!pending.dailyCounted) incDailyTradeCount(expiry);
-
-    info(
-      `ENTRY_RESUMED expiry=${expiry} main=${legs.main.symbol}@${exec.main.fillPrice} hedge=${legs.hedge.symbol}@${exec.hedge.fillPrice} qty=${QTY} (size=${ORDER_SIZE})`
-    );
-    return {
-      took: true,
-      reason: 'RESUMED_ENTRY',
-      spreadId: String(pending._id),
-      runId,
-    };
-  } catch (e) {
-    const attempts = Number(pending?.entryRetry?.attempts || 0) + 1;
-    const backoffMs = Math.min(120000, 2000 * attempts);
-    const nextAttemptAt = new Date(Date.now() + backoffMs);
-    await updateSpreadDoc(pending._id, {
-      entryRetry: {
-        attempts,
-        lastError: String(e && e.message ? e.message : e),
-        nextAttemptAt,
-      },
-    });
-    throw e;
-  }
-}
-
 async function maybeEnterTrade(nowIst) {
   const dayStr = nowIst.format('YYYY-MM-DD');
 
@@ -1239,17 +1171,8 @@ async function maybeEnterTrade(nowIst) {
   if (getDailyTradeCount(expiry) >= MAX_TRADES_PER_DAY)
     return { took: false, reason: 'MAX_TRADES_REACHED' };
 
-  const inFlight = await findInFlightSpreadForExpiry(expiry);
-  if (inFlight) {
-    if (inFlight.status === 'OPEN')
-      return { took: false, reason: 'OPEN_SPREAD_EXISTS' };
-    if (inFlight.status === 'PENDING_ENTRY')
-      return resumePendingEntry(nowIst, inFlight);
-    return {
-      took: false,
-      reason: `INFLIGHT_${String(inFlight.status || 'UNKNOWN')}`,
-    };
-  }
+  const open = await findOpenSpreadForExpiry(expiry);
+  if (open) return { took: false, reason: 'OPEN_SPREAD_EXISTS' };
 
   // Build SuperTrend & signal candle
   const st = await buildTodaySupertrend({
