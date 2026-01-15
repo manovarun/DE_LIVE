@@ -21,8 +21,6 @@ const mongoose = require('mongoose');
 const crypto = require('crypto');
 const https = require('https');
 const { URL } = require('url');
-const fs = require('fs');
-const path = require('path');
 
 let expressAsyncHandler;
 try {
@@ -150,17 +148,15 @@ const HEARTBEAT_MS = Math.max(
   Number(process.env.SUPERTREND_BCS_LIVE_HEARTBEAT_MS || 15000)
 );
 
-// File logging (paper-controller parity)
-const LOG_DIR = process.env.SUPERTREND_BCS_LIVE_LOG_DIR || './logs/livetrade';
-const LOG_TO_FILE =
-  String(
-    process.env.SUPERTREND_BCS_LIVE_LOG_TO_FILE || 'false'
-  ).toLowerCase() === 'true';
-
 // Position sizing for BTC options on Delta: treat LOT_SIZE as contract size (e.g. 0.001) and LOTS as number of contracts
 const LOT_SIZE = Number(process.env.SUPERTREND_BCS_LIVE_LOT_SIZE || 0.001);
-const LOTS = Math.max(1, Number(process.env.SUPERTREND_BCS_LIVE_LOTS || 1));
+const LOTS = Math.max(
+  1,
+  parseInt(process.env.SUPERTREND_BCS_LIVE_LOTS || '1', 10) || 1
+);
 const QTY = LOT_SIZE * LOTS;
+// Delta order size must be an integer (contracts)
+const ORDER_SIZE = LOTS;
 
 // Delta REST
 const DELTA_BASE = (
@@ -183,94 +179,25 @@ const PRODUCT_CACHE_COLLECTION = 'DeltaProductCache';
 // Logging helpers
 // =====================
 
-let _logDirAbs = null;
-let _logFilePath = null;
-let _fileLoggingReady = false;
-
 function nowTs(tz = TZ) {
   return moment().tz(tz).format('YYYY-MM-DD HH:mm:ss');
 }
-
-function _resolveLogFilePath(now = null) {
-  const day = (now ? moment(now) : moment()).tz(TZ).format('YYYYMMDD');
-  const fname = `ST_BCS_BTC_LIVE_${day}.log`;
-  return path.join(_logDirAbs, fname);
-}
-
-function initFileLogger() {
-  if (!LOG_TO_FILE) return false;
-  try {
-    _logDirAbs = path.isAbsolute(LOG_DIR)
-      ? LOG_DIR
-      : path.join(process.cwd(), LOG_DIR);
-    fs.mkdirSync(_logDirAbs, { recursive: true });
-    _logFilePath = _resolveLogFilePath();
-    // touch file so folder + file are guaranteed to exist
-    fs.appendFileSync(_logFilePath, '');
-    _fileLoggingReady = true;
-    return true;
-  } catch (e) {
-    // eslint-disable-next-line no-console
-    console.error(
-      `[${nowTs()}] [ST_BCS_BTC_LIVE][WARN] File logging init failed (dir=${LOG_DIR}): ${
-        e && e.message ? e.message : e
-      }`
-    );
-    _fileLoggingReady = false;
-    return false;
-  }
-}
-
-function writeToFile(line) {
-  if (!LOG_TO_FILE || !_fileLoggingReady) return;
-  try {
-    const expected = _resolveLogFilePath();
-    if (_logFilePath !== expected) {
-      _logFilePath = expected; // day rollover
-      fs.appendFileSync(_logFilePath, '');
-    }
-    fs.appendFile(
-      _logFilePath,
-      `${line}
-`,
-      () => {}
-    );
-  } catch {
-    // silent
-  }
-}
-
 function info(msg) {
-  const line = `[${nowTs()}] [ST_BCS_BTC_LIVE] ${msg}`;
   // eslint-disable-next-line no-console
-  console.log(line);
-  writeToFile(line);
+  console.log(`[${nowTs()}] [ST_BCS_BTC_LIVE] ${msg}`);
 }
 function warn(msg) {
-  const line = `[${nowTs()}] [ST_BCS_BTC_LIVE][WARN] ${msg}`;
   // eslint-disable-next-line no-console
-  console.warn(line);
-  writeToFile(line);
+  console.warn(`[${nowTs()}] [ST_BCS_BTC_LIVE][WARN] ${msg}`);
 }
 function error(msg, err) {
-  const line = `[${nowTs()}] [ST_BCS_BTC_LIVE][ERROR] ${msg}`;
   // eslint-disable-next-line no-console
-  console.error(line);
-  writeToFile(line);
+  console.error(`[${nowTs()}] [ST_BCS_BTC_LIVE][ERROR] ${msg}`);
   if (err) {
     // eslint-disable-next-line no-console
     console.error(err);
-    try {
-      const errLine = err && err.stack ? String(err.stack) : String(err);
-      writeToFile(errLine);
-    } catch {
-      // silent
-    }
   }
 }
-
-// Initialize file logging at module load (no impact if disabled)
-initFileLogger();
 
 // =====================
 // DB helpers
@@ -554,6 +481,24 @@ function computeVwapFromFills(fills) {
   });
   if (!qty) return null;
   return notional / qty;
+}
+
+// =====================
+// Client order id helper (Delta limit: <= 32 chars)
+// =====================
+function buildClientOrderId(runId, tag) {
+  const t = String(tag || '')
+    .toUpperCase()
+    .replace(/[^A-Z0-9]/g, '')
+    .slice(0, 6);
+  const base = `${STRATEGY}|${runId}|${t}`;
+  const hash = crypto
+    .createHash('sha1')
+    .update(base)
+    .digest('hex')
+    .slice(0, 20);
+  // Prefix kept short to stay within 32 chars deterministically
+  return `SBCS${t}${hash}`.slice(0, 32);
 }
 
 // =====================
@@ -993,6 +938,22 @@ async function findOpenSpreadForExpiry(expiryStr) {
   );
 }
 
+async function findActiveSpreadForExpiry(expiryStr) {
+  const db = getDb();
+  const coll = db.collection(SPREADS_COLLECTION);
+  return findOneSorted(
+    coll,
+    {
+      strategy: STRATEGY,
+      stockName: STOCK_NAME,
+      stockSymbol: STOCK_SYMBOL,
+      expiry: expiryStr,
+      status: { $in: ['OPEN', 'PENDING_ENTRY', 'PENDING_EXIT'] },
+    },
+    { createdAt: -1 }
+  );
+}
+
 // =====================
 // Live execution helpers
 // =====================
@@ -1005,14 +966,14 @@ async function executeEntry({ runId, expiry, underlyingPrice, legs, nowIst }) {
   const mainPid = await getProductIdBySymbol(mainSymbol);
 
   // Hedge first (BUY), then main (SELL)
-  const hedgeClientId = `${runId}-HEDGE-BUY`;
-  const mainClientId = `${runId}-MAIN-SELL`;
+  const hedgeClientId = buildClientOrderId(runId, 'HBUY');
+  const mainClientId = buildClientOrderId(runId, 'MSELL');
 
   const entryStart = Date.now();
   const hedgeOrder = await placeOrder({
     product_id: hedgePid,
     side: 'buy',
-    size: QTY,
+    size: ORDER_SIZE,
     order_type: 'market_order',
     reduce_only: false,
     client_order_id: hedgeClientId,
@@ -1021,7 +982,7 @@ async function executeEntry({ runId, expiry, underlyingPrice, legs, nowIst }) {
   const mainOrder = await placeOrder({
     product_id: mainPid,
     side: 'sell',
-    size: QTY,
+    size: ORDER_SIZE,
     order_type: 'market_order',
     reduce_only: false,
     client_order_id: mainClientId,
@@ -1081,13 +1042,13 @@ async function executeExit({ runId, open, reason, nowIst }) {
   const exitStart = Date.now();
 
   // Main first (BUY) to remove naked short exposure, then hedge (SELL)
-  const mainClientId = `${runId}-MAIN-BUY-EXIT`;
-  const hedgeClientId = `${runId}-HEDGE-SELL-EXIT`;
+  const mainClientId = buildClientOrderId(runId, 'MBUYX');
+  const hedgeClientId = buildClientOrderId(runId, 'HSELLX');
 
   const mainExitOrder = await placeOrder({
     product_id: mainPid,
     side: 'buy',
-    size: QTY,
+    size: ORDER_SIZE,
     order_type: 'market_order',
     reduce_only: true,
     client_order_id: mainClientId,
@@ -1096,7 +1057,7 @@ async function executeExit({ runId, open, reason, nowIst }) {
   const hedgeExitOrder = await placeOrder({
     product_id: hedgePid,
     side: 'sell',
-    size: QTY,
+    size: ORDER_SIZE,
     order_type: 'market_order',
     reduce_only: true,
     client_order_id: hedgeClientId,
@@ -1171,8 +1132,13 @@ async function maybeEnterTrade(nowIst) {
   if (getDailyTradeCount(expiry) >= MAX_TRADES_PER_DAY)
     return { took: false, reason: 'MAX_TRADES_REACHED' };
 
-  const open = await findOpenSpreadForExpiry(expiry);
-  if (open) return { took: false, reason: 'OPEN_SPREAD_EXISTS' };
+  const active = await findActiveSpreadForExpiry(expiry);
+  if (active)
+    return {
+      took: false,
+      reason: 'ACTIVE_SPREAD_EXISTS',
+      status: active.status,
+    };
 
   // Build SuperTrend & signal candle
   const st = await buildTodaySupertrend({

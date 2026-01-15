@@ -157,8 +157,13 @@ const LOG_TO_FILE =
 
 // Position sizing for BTC options on Delta: treat LOT_SIZE as contract size (e.g. 0.001) and LOTS as number of contracts
 const LOT_SIZE = Number(process.env.SUPERTREND_BPS_LIVE_LOT_SIZE || 0.001);
-const LOTS = Math.max(1, Number(process.env.SUPERTREND_BPS_LIVE_LOTS || 1));
+const LOTS = Math.max(
+  1,
+  parseInt(process.env.SUPERTREND_BPS_LIVE_LOTS || '1', 10) || 1
+);
 const QTY = LOT_SIZE * LOTS;
+// Delta order size must be an integer (contracts)
+const ORDER_SIZE = LOTS;
 
 // Delta REST
 const DELTA_BASE = (
@@ -534,6 +539,24 @@ function computeVwapFromFills(fills) {
   });
   if (!qty) return null;
   return notional / qty;
+}
+
+// =====================
+// Client order id helper (Delta limit: <= 32 chars)
+// =====================
+function buildClientOrderId(runId, tag) {
+  const t = String(tag || '')
+    .toUpperCase()
+    .replace(/[^A-Z0-9]/g, '')
+    .slice(0, 6);
+  const base = `${STRATEGY}|${runId}|${t}`;
+  const hash = crypto
+    .createHash('sha1')
+    .update(base)
+    .digest('hex')
+    .slice(0, 20);
+  // Prefix kept short to stay within 32 chars deterministically
+  return `SBPS${t}${hash}`.slice(0, 32);
 }
 
 // =====================
@@ -969,6 +992,22 @@ async function findOpenSpreadForExpiry(expiryStr) {
   );
 }
 
+async function findActiveSpreadForExpiry(expiryStr) {
+  const db = getDb();
+  const coll = db.collection(SPREADS_COLLECTION);
+  return findOneSorted(
+    coll,
+    {
+      strategy: STRATEGY,
+      stockName: STOCK_NAME,
+      stockSymbol: STOCK_SYMBOL,
+      expiry: expiryStr,
+      status: { $in: ['OPEN', 'PENDING_ENTRY', 'PENDING_EXIT'] },
+    },
+    { createdAt: -1 }
+  );
+}
+
 // =====================
 // Live execution helpers
 // =====================
@@ -981,15 +1020,15 @@ async function executeEntry({ runId, expiry, underlyingPrice, legs, nowIst }) {
   const mainPid = await getProductIdBySymbol(mainSymbol);
 
   // Hedge first (BUY), then main (SELL) for Bull Put Spread
-  const hedgeClientId = `${runId}-HEDGE-BUY`;
-  const mainClientId = `${runId}-MAIN-SELL`;
+  const hedgeClientId = buildClientOrderId(runId, 'HBUY');
+  const mainClientId = buildClientOrderId(runId, 'MSELL');
 
   const entryStart = Date.now();
 
   const hedgeOrder = await placeOrder({
     product_id: hedgePid,
     side: 'buy',
-    size: QTY,
+    size: ORDER_SIZE,
     order_type: 'market_order',
     reduce_only: false,
     client_order_id: hedgeClientId,
@@ -998,7 +1037,7 @@ async function executeEntry({ runId, expiry, underlyingPrice, legs, nowIst }) {
   const mainOrder = await placeOrder({
     product_id: mainPid,
     side: 'sell',
-    size: QTY,
+    size: ORDER_SIZE,
     order_type: 'market_order',
     reduce_only: false,
     client_order_id: mainClientId,
@@ -1057,13 +1096,13 @@ async function executeExit({ runId, open, reason, nowIst }) {
   const exitStart = Date.now();
 
   // Main first (BUY) to close short put, then hedge (SELL)
-  const mainClientId = `${runId}-MAIN-BUY-EXIT`;
-  const hedgeClientId = `${runId}-HEDGE-SELL-EXIT`;
+  const mainClientId = buildClientOrderId(runId, 'MBUYX');
+  const hedgeClientId = buildClientOrderId(runId, 'HSELLX');
 
   const mainExitOrder = await placeOrder({
     product_id: mainPid,
     side: 'buy',
-    size: QTY,
+    size: ORDER_SIZE,
     order_type: 'market_order',
     reduce_only: true,
     client_order_id: mainClientId,
@@ -1072,7 +1111,7 @@ async function executeExit({ runId, open, reason, nowIst }) {
   const hedgeExitOrder = await placeOrder({
     product_id: hedgePid,
     side: 'sell',
-    size: QTY,
+    size: ORDER_SIZE,
     order_type: 'market_order',
     reduce_only: true,
     client_order_id: hedgeClientId,
@@ -1144,8 +1183,13 @@ async function maybeEnterTrade(nowIst) {
   if (getDailyTradeCount(expiry) >= MAX_TRADES_PER_DAY)
     return { took: false, reason: 'MAX_TRADES_REACHED' };
 
-  const open = await findOpenSpreadForExpiry(expiry);
-  if (open) return { took: false, reason: 'OPEN_SPREAD_EXISTS' };
+  const active = await findActiveSpreadForExpiry(expiry);
+  if (active)
+    return {
+      took: false,
+      reason: 'ACTIVE_SPREAD_EXISTS',
+      status: active.status,
+    };
 
   const st = await buildTodaySupertrend({
     nowIst,
