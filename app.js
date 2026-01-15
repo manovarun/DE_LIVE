@@ -40,7 +40,7 @@ app.use(express.urlencoded({ extended: false }));
 app.use(cookieParser());
 app.use(express.static(path.join(__dirname, 'public')));
 
-app.use('/api/backtest', tickerRouter);
+app.use('/api/live', tickerRouter);
 
 app.use(GlobalErrorHandler);
 

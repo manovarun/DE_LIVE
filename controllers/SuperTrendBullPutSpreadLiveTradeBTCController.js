@@ -20,6 +20,9 @@ const crypto = require('crypto');
 const https = require('https');
 const { URL } = require('url');
 
+const fs = require('fs');
+const path = require('path');
+
 let expressAsyncHandler;
 try {
   // eslint-disable-next-line import/no-extraneous-dependencies
@@ -122,6 +125,20 @@ const ALLOW_FORMING_CANDLE =
 const PNL_POLL_MS = Math.max(2000, Number(process.env.SUPERTREND_BPS_LIVE_PNL_POLL_MS || 15000));
 const HEARTBEAT_MS = Math.max(0, Number(process.env.SUPERTREND_BPS_LIVE_HEARTBEAT_MS || 15000));
 
+const LIVE_LOG_DIR = process.env.SUPERTREND_BPS_LIVE_LOG_DIR || './logs/livetrade';
+const LIVE_LOG_TO_FILE =
+  String(process.env.SUPERTREND_BPS_LIVE_LOG_TO_FILE || 'false').toLowerCase() === 'true';
+
+// Resolve log directory relative to process working directory to avoid surprises under PM2/nodemon/systemd.
+const LIVE_LOG_DIR_ABS = path.isAbsolute(LIVE_LOG_DIR)
+  ? LIVE_LOG_DIR
+  : path.resolve(process.cwd(), LIVE_LOG_DIR);
+
+// Use a mutable flag so we can disable file logging if the filesystem is not writable.
+let fileLogEnabled = LIVE_LOG_TO_FILE;
+let fileLogWarned = false;
+
+
 // Position sizing for BTC options on Delta: treat LOT_SIZE as contract size (e.g. 0.001) and LOTS as number of contracts
 const LOT_SIZE = Number(process.env.SUPERTREND_BPS_LIVE_LOT_SIZE || 0.001);
 const LOTS = Math.max(1, Number(process.env.SUPERTREND_BPS_LIVE_LOTS || 1));
@@ -140,7 +157,55 @@ const PRODUCT_CACHE_COLLECTION = 'DeltaProductCache';
 
 // =====================
 // Logging helpers
+
+
+function ensureDir(dirPath) {
+  try {
+    fs.mkdirSync(dirPath, { recursive: true });
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
+function appendLiveLog(line) {
+  if (!fileLogEnabled) return;
+  try {
+    const fileName = `ST_BPS_BTC_LIVE_${moment().tz(TZ).format('YYYYMMDD')}.log`;
+    const fp = path.join(LIVE_LOG_DIR_ABS, fileName);
+    fs.appendFileSync(fp, `${nowTs()} [ST_BPS_BTC_LIVE] ${line}\n`);
+  } catch (e) {
+    if (!fileLogWarned) {
+      fileLogWarned = true;
+      fileLogEnabled = false;
+      // eslint-disable-next-line no-console
+      console.warn(
+        `[${nowTs()}] [ST_BPS_BTC_LIVE][WARN] Failed to write log file. Disabling file logging. dir=${LIVE_LOG_DIR_ABS} err=${e && e.message ? e.message : e}`
+      );
+    }
+  }
+}
 // =====================
+
+// Create the daily log file early (on startup) so you can verify logging immediately.
+try {
+  // Always create the directory so you can quickly validate the resolved path.
+  ensureDir(LIVE_LOG_DIR_ABS);
+
+  if (fileLogEnabled) {
+    appendLiveLog(`[BOOT] File logging enabled dir=${LIVE_LOG_DIR_ABS}`);
+    // eslint-disable-next-line no-console
+    console.log(`[${nowTs()}] [ST_BPS_BTC_LIVE] File logging ENABLED dir=${LIVE_LOG_DIR_ABS}`);
+  } else {
+    // eslint-disable-next-line no-console
+    console.log(
+      `[${nowTs()}] [ST_BPS_BTC_LIVE] File logging DISABLED (set SUPERTREND_BPS_LIVE_LOG_TO_FILE=true) dir=${LIVE_LOG_DIR_ABS}`
+    );
+  }
+} catch {
+  // ignore
+}
+
 
 function nowTs(tz = TZ) {
   return moment().tz(tz).format('YYYY-MM-DD HH:mm:ss');
@@ -148,17 +213,23 @@ function nowTs(tz = TZ) {
 function info(msg) {
   // eslint-disable-next-line no-console
   console.log(`[${nowTs()}] [ST_BPS_BTC_LIVE] ${msg}`);
+  appendLiveLog(`[INFO] ${msg}`);
 }
 function warn(msg) {
   // eslint-disable-next-line no-console
   console.warn(`[${nowTs()}] [ST_BPS_BTC_LIVE][WARN] ${msg}`);
+  appendLiveLog(`[WARN] ${msg}`);
 }
 function error(msg, err) {
   // eslint-disable-next-line no-console
   console.error(`[${nowTs()}] [ST_BPS_BTC_LIVE][ERROR] ${msg}`);
+  appendLiveLog(`[ERROR] ${msg}`);
   if (err) {
     // eslint-disable-next-line no-console
     console.error(err);
+    try {
+      appendLiveLog(String(err && err.stack ? err.stack : err));
+    } catch {}
   }
 }
 
