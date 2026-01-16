@@ -174,6 +174,17 @@ const DELTA_TIMEOUT_MS = Math.max(
   Number(process.env.DELTA_TIMEOUT_MS || 20000)
 );
 
+// Auto topup (Delta) - helps avoid liquidation by automatically topping up margin on the SHORT position
+const AUTO_TOPUP_ENABLED =
+  String(
+    process.env.SUPERTREND_BCS_LIVE_AUTO_TOPUP_ENABLED || 'false'
+  ).toLowerCase() === 'true';
+// Delta docs list auto_topup as boolean, but examples show string. Keep an option to send as string.
+const AUTO_TOPUP_AS_STRING =
+  String(
+    process.env.SUPERTREND_BCS_LIVE_AUTO_TOPUP_AS_STRING || 'false'
+  ).toLowerCase() === 'true';
+
 const STRATEGY = 'SUPERTREND_BEAR_CALL_SPREAD_LIVE_BTC_DELTA';
 const SPREADS_COLLECTION = 'SupertrendBcsLiveSpreads';
 const PRODUCT_CACHE_COLLECTION = 'DeltaProductCache';
@@ -409,6 +420,65 @@ async function deltaRequest(method, path, { query, body, auth } = {}) {
   }
 
   throw new Error(`Delta API error ${res.status}: ${res.raw}`);
+}
+
+// =====================
+// Auto topup helper (Delta)
+// =====================
+
+const _autoTopupAppliedProductIds = new Set();
+
+function buildAutoTopupBody(productId, enabled) {
+  // The docs show example body with "auto_topup": "false" but parameter type says boolean.
+  // Support both formats via env toggle for compatibility.
+  return {
+    product_id: Number(productId),
+    auto_topup: AUTO_TOPUP_AS_STRING ? (enabled ? 'true' : 'false') : !!enabled,
+  };
+}
+
+async function setPositionAutoTopup(productId, enabled, contextLabel = '') {
+  const pid = Number(productId);
+  if (!Number.isFinite(pid) || pid <= 0) return null;
+
+  const body = buildAutoTopupBody(pid, enabled);
+
+  // Make the payload visible in logs (helps verify quickly in production)
+  info(
+    `AUTO_TOPUP request ${
+      contextLabel ? '(' + contextLabel + ') ' : ''
+    }body=${JSON.stringify(body)}`
+  );
+
+  const resp = await deltaRequest('PUT', '/v2/positions/auto_topup', {
+    body,
+    auth: true,
+  });
+  return resp;
+}
+
+async function ensureAutoTopupOnce(productId, contextLabel = '') {
+  if (!AUTO_TOPUP_ENABLED) return;
+  const pid = Number(productId);
+  if (!Number.isFinite(pid) || pid <= 0) return;
+  if (_autoTopupAppliedProductIds.has(pid)) return;
+
+  try {
+    await setPositionAutoTopup(pid, true, contextLabel);
+    _autoTopupAppliedProductIds.add(pid);
+    info(
+      `AUTO_TOPUP enabled for product_id=${pid} ${
+        contextLabel ? '(' + contextLabel + ')' : ''
+      }`
+    );
+  } catch (e) {
+    // Do not block trading on auto topup failures; log and continue
+    warn(
+      `AUTO_TOPUP failed for product_id=${pid} ${
+        contextLabel ? '(' + contextLabel + ')' : ''
+      }: ${e && e.message ? e.message : e}`
+    );
+  }
 }
 
 async function getProductIdBySymbol(symbol) {
@@ -1033,6 +1103,9 @@ async function executeEntry({ runId, expiry, underlyingPrice, legs, nowIst }) {
     client_order_id: mainClientId,
   });
 
+  // Enable auto-topup for the MAIN short leg to reduce liquidation risk (non-blocking)
+  await ensureAutoTopupOnce(mainPid, 'ENTRY_MAIN');
+
   // Pull fills for the last ~2 minutes for both products and compute VWAP for each order_id
   const endMicros = Date.now() * 1000;
   const startMicros = (Date.now() - 2 * 60 * 1000) * 1000;
@@ -1341,6 +1414,9 @@ async function maybeEnterTrade(nowIst) {
 async function maybeExitOpenSpread(nowIst, open) {
   if (!open || open.status !== 'OPEN') return { exited: false };
 
+  // If controller restarts with an OPEN spread, re-apply auto-topup once (best-effort)
+  await ensureAutoTopupOnce(open?.main?.product_id, 'OPEN_MAIN');
+
   const dayStr = nowIst.format('YYYY-MM-DD');
   const squareOffIst = hhmmToMoment(dayStr, SQUARE_OFF_TIME, TZ);
   const shouldSquareOff = nowIst.isSameOrAfter(squareOffIst);
@@ -1533,6 +1609,8 @@ const SuperTrendBearCallSpreadLiveTradeBTCController = expressAsyncHandler(
           LOT_SIZE,
           LOTS,
           QTY,
+          AUTO_TOPUP_ENABLED,
+          AUTO_TOPUP_AS_STRING,
           DELTA_BASE,
         },
       });
