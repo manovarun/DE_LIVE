@@ -189,6 +189,18 @@ const AUTO_TOPUP_AS_STRING =
     process.env.SUPERTREND_BPS_LIVE_AUTO_TOPUP_AS_STRING || 'false'
   ).toLowerCase() === 'true';
 
+// Order leverage (Delta) - sets leverage for OPEN ORDERS on the product (helps control order margin)
+const ORDER_LEVERAGE_ENABLED =
+  String(
+    process.env.SUPERTREND_BPS_LIVE_ORDER_LEVERAGE_ENABLED || 'false'
+  ).toLowerCase() === 'true';
+const ORDER_LEVERAGE = String(
+  process.env.SUPERTREND_BPS_LIVE_ORDER_LEVERAGE || ''
+).trim(); // e.g. "25"
+const ORDER_LEVERAGE_APPLY_TO = String(
+  process.env.SUPERTREND_BPS_LIVE_ORDER_LEVERAGE_APPLY_TO || 'MAIN'
+).toUpperCase(); // MAIN | HEDGE | BOTH
+
 const STRATEGY = 'SUPERTREND_BULL_PUT_SPREAD_LIVE_BTC_DELTA';
 const SPREADS_COLLECTION = 'SupertrendBpsLiveSpreads';
 const PRODUCT_CACHE_COLLECTION = 'DeltaProductCache';
@@ -497,6 +509,88 @@ async function ensureAutoTopupOnce(productId, contextLabel = '') {
   } catch (e) {
     warn(
       `AUTO_TOPUP failed for product_id=${pid} ${
+        contextLabel ? '(' + contextLabel + ')' : ''
+      }: ${e && e.message ? e.message : e}`
+    );
+  }
+}
+
+// =====================
+// Order leverage helper (Delta) - applies to OPEN ORDERS for a product
+// =====================
+
+const _orderLeverageAppliedByProductId = new Map();
+
+function _normalizeLeverageValue(v) {
+  const val = String(v ?? '').trim();
+  if (!val) return null;
+  // keep as string (Delta docs accept string; examples also show numeric)
+  return val;
+}
+
+function _shouldApplyOrderLeverageForLeg(legLabel) {
+  const mode = String(ORDER_LEVERAGE_APPLY_TO || 'MAIN').toUpperCase();
+  const leg = String(legLabel || '').toUpperCase();
+  if (mode === 'BOTH') return true;
+  if (mode === 'MAIN' && leg === 'MAIN') return true;
+  if (mode === 'HEDGE' && leg === 'HEDGE') return true;
+  return false;
+}
+
+async function setOrderLeverage(productId, leverageValue, contextLabel = '') {
+  const pid = Number(productId);
+  if (!Number.isFinite(pid) || pid <= 0) return null;
+  const lev = _normalizeLeverageValue(leverageValue);
+  if (!lev) return null;
+
+  const body = { leverage: lev };
+  info(
+    `ORDER_LEVERAGE request ${
+      contextLabel ? '(' + contextLabel + ') ' : ''
+    }product_id=${pid} body=${JSON.stringify(body)}`
+  );
+
+  const resp = await deltaRequest(
+    'POST',
+    `/v2/products/${pid}/orders/leverage`,
+    {
+      body,
+      auth: true,
+    }
+  );
+  return resp;
+}
+
+async function ensureOrderLeverageOnce(
+  productId,
+  legLabel = '',
+  contextLabel = ''
+) {
+  if (!ORDER_LEVERAGE_ENABLED) return;
+  if (!_shouldApplyOrderLeverageForLeg(legLabel)) return;
+  const pid = Number(productId);
+  if (!Number.isFinite(pid) || pid <= 0) return;
+
+  const lev = _normalizeLeverageValue(ORDER_LEVERAGE);
+  if (!lev) {
+    warn('ORDER_LEVERAGE enabled but ORDER_LEVERAGE value is empty; skipping.');
+    return;
+  }
+
+  const prev = _orderLeverageAppliedByProductId.get(pid);
+  if (prev === lev) return;
+
+  try {
+    await setOrderLeverage(pid, lev, contextLabel);
+    _orderLeverageAppliedByProductId.set(pid, lev);
+    info(
+      `ORDER_LEVERAGE set to ${lev} for product_id=${pid} ${
+        contextLabel ? '(' + contextLabel + ')' : ''
+      }`
+    );
+  } catch (e) {
+    warn(
+      `ORDER_LEVERAGE failed for product_id=${pid} ${
         contextLabel ? '(' + contextLabel + ')' : ''
       }: ${e && e.message ? e.message : e}`
     );
@@ -1087,6 +1181,10 @@ async function executeEntry({ runId, expiry, underlyingPrice, legs, nowIst }) {
   const hedgePid = await getProductIdBySymbol(hedgeSymbol);
   const mainPid = await getProductIdBySymbol(mainSymbol);
 
+  // Set order leverage (best-effort, non-blocking)
+  await ensureOrderLeverageOnce(hedgePid, 'HEDGE', 'ENTRY_HEDGE');
+  await ensureOrderLeverageOnce(mainPid, 'MAIN', 'ENTRY_MAIN');
+
   // Hedge first (BUY), then main (SELL) for Bull Put Spread
   const hedgeClientId = buildClientOrderId(runId, 'HBUY');
   const mainClientId = buildClientOrderId(runId, 'MSELL');
@@ -1163,6 +1261,10 @@ async function executeExit({ runId, open, reason, nowIst }) {
   const hedgePid = Number(open?.hedge?.product_id);
   if (!Number.isFinite(mainPid) || !Number.isFinite(hedgePid))
     throw new Error('Missing product_id on open spread doc.');
+
+  // Set order leverage for exit orders as well (best-effort, non-blocking)
+  await ensureOrderLeverageOnce(mainPid, 'MAIN', 'EXIT_MAIN');
+  await ensureOrderLeverageOnce(hedgePid, 'HEDGE', 'EXIT_HEDGE');
 
   const exitStart = Date.now();
 
@@ -1611,6 +1713,9 @@ const SuperTrendBullPutSpreadLiveTradeBTCController = expressAsyncHandler(
           QTY,
           AUTO_TOPUP_ENABLED,
           AUTO_TOPUP_AS_STRING,
+          ORDER_LEVERAGE_ENABLED,
+          ORDER_LEVERAGE,
+          ORDER_LEVERAGE_APPLY_TO,
           DELTA_BASE,
         },
       });
