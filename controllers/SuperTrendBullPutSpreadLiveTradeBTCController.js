@@ -85,10 +85,10 @@ const DAILY_EXPIRY_CUTOFF =
 // SL/TP config (applies only to MAIN short put leg)
 const STOPLOSS_ENABLED =
   String(
-    process.env.SUPERTREND_BPS_LIVE_STOPLOSS_ENABLED || 'true'
+    process.env.SUPERTREND_BPS_LIVE_STOPLOSS_ENABLED || 'true',
   ).toLowerCase() === 'true';
 const STOPLOSS_PCT = Number(
-  process.env.SUPERTREND_BPS_LIVE_STOPLOSS_PCT || 5000
+  process.env.SUPERTREND_BPS_LIVE_STOPLOSS_PCT || 5000,
 );
 const TARGET_PCT = Number(process.env.SUPERTREND_BPS_LIVE_TARGET_PCT || 50);
 
@@ -98,20 +98,20 @@ const HEDGE_MONEYNESS =
 
 const ATR_PERIOD = Math.max(
   1,
-  Number(process.env.SUPERTREND_BPS_LIVE_ATR_PERIOD || 10)
+  Number(process.env.SUPERTREND_BPS_LIVE_ATR_PERIOD || 10),
 );
 const MULTIPLIER = Math.max(
   0.1,
-  Number(process.env.SUPERTREND_BPS_LIVE_MULTIPLIER || 3)
+  Number(process.env.SUPERTREND_BPS_LIVE_MULTIPLIER || 3),
 );
 const CHANGE_ATR_CALC =
   String(
-    process.env.SUPERTREND_BPS_LIVE_CHANGE_ATR_CALC || 'true'
+    process.env.SUPERTREND_BPS_LIVE_CHANGE_ATR_CALC || 'true',
   ).toLowerCase() === 'true';
 
 const FORCE_ENTRY =
   String(
-    process.env.SUPERTREND_BPS_LIVE_FORCE_ENTRY || 'false'
+    process.env.SUPERTREND_BPS_LIVE_FORCE_ENTRY || 'false',
   ).toLowerCase() === 'true';
 
 const WEEKDAYS = (
@@ -123,43 +123,43 @@ const WEEKDAYS = (
 
 const MAX_TRADES_PER_DAY = Math.max(
   1,
-  Number(process.env.SUPERTREND_BPS_LIVE_MAX_TRADES_PER_DAY || 5)
+  Number(process.env.SUPERTREND_BPS_LIVE_MAX_TRADES_PER_DAY || 5),
 );
 const MIN_CANDLES = Math.max(
   5,
-  Number(process.env.SUPERTREND_BPS_LIVE_MIN_CANDLES || 20)
+  Number(process.env.SUPERTREND_BPS_LIVE_MIN_CANDLES || 20),
 );
 
 const CANDLE_GRACE_SECONDS = Math.max(
   0,
-  Number(process.env.SUPERTREND_BPS_LIVE_CANDLE_GRACE_SECONDS || 5)
+  Number(process.env.SUPERTREND_BPS_LIVE_CANDLE_GRACE_SECONDS || 5),
 );
 const ALLOW_FORMING_CANDLE =
   String(
-    process.env.SUPERTREND_BPS_LIVE_ALLOW_FORMING_CANDLE || 'false'
+    process.env.SUPERTREND_BPS_LIVE_ALLOW_FORMING_CANDLE || 'false',
   ).toLowerCase() === 'true';
 
 const PNL_POLL_MS = Math.max(
   2000,
-  Number(process.env.SUPERTREND_BPS_LIVE_PNL_POLL_MS || 15000)
+  Number(process.env.SUPERTREND_BPS_LIVE_PNL_POLL_MS || 15000),
 );
 const HEARTBEAT_MS = Math.max(
   0,
-  Number(process.env.SUPERTREND_BPS_LIVE_HEARTBEAT_MS || 15000)
+  Number(process.env.SUPERTREND_BPS_LIVE_HEARTBEAT_MS || 15000),
 );
 
 // File logging (paper-controller parity)
 const LOG_DIR = process.env.SUPERTREND_BPS_LIVE_LOG_DIR || './logs/livetrade';
 const LOG_TO_FILE =
   String(
-    process.env.SUPERTREND_BPS_LIVE_LOG_TO_FILE || 'false'
+    process.env.SUPERTREND_BPS_LIVE_LOG_TO_FILE || 'false',
   ).toLowerCase() === 'true';
 
 // Position sizing for BTC options on Delta: treat LOT_SIZE as contract size (e.g. 0.001) and LOTS as number of contracts
 const LOT_SIZE = Number(process.env.SUPERTREND_BPS_LIVE_LOT_SIZE || 0.001);
 const LOTS = Math.max(
   1,
-  parseInt(process.env.SUPERTREND_BPS_LIVE_LOTS || '1', 10) || 1
+  parseInt(process.env.SUPERTREND_BPS_LIVE_LOTS || '1', 10) || 1,
 );
 const QTY = LOT_SIZE * LOTS;
 // Delta order size must be an integer (contracts)
@@ -175,30 +175,30 @@ const DELTA_USER_AGENT =
   process.env.DELTA_USER_AGENT || 'delta-exchange-node-client';
 const DELTA_TIMEOUT_MS = Math.max(
   3000,
-  Number(process.env.DELTA_TIMEOUT_MS || 20000)
+  Number(process.env.DELTA_TIMEOUT_MS || 20000),
 );
 
 // Auto topup (Delta) - helps avoid liquidation by automatically topping up margin on the SHORT position
 const AUTO_TOPUP_ENABLED =
   String(
-    process.env.SUPERTREND_BPS_LIVE_AUTO_TOPUP_ENABLED || 'false'
+    process.env.SUPERTREND_BPS_LIVE_AUTO_TOPUP_ENABLED || 'false',
   ).toLowerCase() === 'true';
 // Delta docs list auto_topup as boolean, but examples show string. Keep an option to send as string.
 const AUTO_TOPUP_AS_STRING =
   String(
-    process.env.SUPERTREND_BPS_LIVE_AUTO_TOPUP_AS_STRING || 'false'
+    process.env.SUPERTREND_BPS_LIVE_AUTO_TOPUP_AS_STRING || 'false',
   ).toLowerCase() === 'true';
 
 // Order leverage (Delta) - sets leverage for OPEN ORDERS on the product (helps control order margin)
 const ORDER_LEVERAGE_ENABLED =
   String(
-    process.env.SUPERTREND_BPS_LIVE_ORDER_LEVERAGE_ENABLED || 'false'
+    process.env.SUPERTREND_BPS_LIVE_ORDER_LEVERAGE_ENABLED || 'false',
   ).toLowerCase() === 'true';
 const ORDER_LEVERAGE = String(
-  process.env.SUPERTREND_BPS_LIVE_ORDER_LEVERAGE || ''
+  process.env.SUPERTREND_BPS_LIVE_ORDER_LEVERAGE || '',
 ).trim(); // e.g. "25"
 const ORDER_LEVERAGE_APPLY_TO = String(
-  process.env.SUPERTREND_BPS_LIVE_ORDER_LEVERAGE_APPLY_TO || 'MAIN'
+  process.env.SUPERTREND_BPS_LIVE_ORDER_LEVERAGE_APPLY_TO || 'MAIN',
 ).toUpperCase(); // MAIN | HEDGE | BOTH
 
 const STRATEGY = 'SUPERTREND_BULL_PUT_SPREAD_LIVE_BTC_DELTA';
@@ -240,7 +240,7 @@ function initFileLogger() {
     console.error(
       `[${nowTs()}] [ST_BPS_BTC_LIVE][WARN] File logging init failed (dir=${LOG_DIR}): ${
         e && e.message ? e.message : e
-      }`
+      }`,
     );
     _fileLoggingReady = false;
     return false;
@@ -259,7 +259,7 @@ function writeToFile(line) {
       _logFilePath,
       `${line}
 `,
-      () => {}
+      () => {},
     );
   } catch {
     // silent
@@ -351,7 +351,7 @@ function hmacSha256Hex(secret, message) {
 function buildSortedQueryString(query) {
   if (!query || typeof query !== 'object') return '';
   const keys = Object.keys(query).filter(
-    (k) => query[k] !== undefined && query[k] !== null
+    (k) => query[k] !== undefined && query[k] !== null,
   );
   if (!keys.length) return '';
   keys.sort();
@@ -378,7 +378,7 @@ function httpRequestJson(method, urlStr, headers, bodyStr, timeoutMs) {
         const status = res.statusCode || 0;
         const headersLower = {};
         Object.entries(res.headers || {}).forEach(
-          ([k, v]) => (headersLower[String(k).toLowerCase()] = v)
+          ([k, v]) => (headersLower[String(k).toLowerCase()] = v),
         );
         let parsed = null;
         try {
@@ -437,7 +437,7 @@ async function deltaRequest(method, path, { query, body, auth } = {}) {
       url,
       headers,
       payload,
-      DELTA_TIMEOUT_MS
+      DELTA_TIMEOUT_MS,
     );
     if (retry.status >= 200 && retry.status < 300) return retry.json;
     throw new Error(`Delta API error ${retry.status}: ${retry.raw}`);
@@ -482,7 +482,7 @@ async function setPositionAutoTopup(productId, enabled, contextLabel = '') {
   info(
     `AUTO_TOPUP request ${
       contextLabel ? '(' + contextLabel + ') ' : ''
-    }body=${JSON.stringify(body)}`
+    }body=${JSON.stringify(body)}`,
   );
 
   const resp = await deltaRequest('PUT', '/v2/positions/auto_topup', {
@@ -504,13 +504,13 @@ async function ensureAutoTopupOnce(productId, contextLabel = '') {
     info(
       `AUTO_TOPUP enabled for product_id=${pid} ${
         contextLabel ? '(' + contextLabel + ')' : ''
-      }`
+      }`,
     );
   } catch (e) {
     warn(
       `AUTO_TOPUP failed for product_id=${pid} ${
         contextLabel ? '(' + contextLabel + ')' : ''
-      }: ${e && e.message ? e.message : e}`
+      }: ${e && e.message ? e.message : e}`,
     );
   }
 }
@@ -545,9 +545,7 @@ async function setOrderLeverage(productId, leverageValue, contextLabel = '') {
 
   const body = { leverage: lev };
   info(
-    `ORDER_LEVERAGE request ${
-      contextLabel ? '(' + contextLabel + ') ' : ''
-    }product_id=${pid} body=${JSON.stringify(body)}`
+    `ORDER_LEVERAGE request ${contextLabel ? '(' + contextLabel + ') ' : ''}product_id=${pid} body=${JSON.stringify(body)}`,
   );
 
   const resp = await deltaRequest(
@@ -556,7 +554,7 @@ async function setOrderLeverage(productId, leverageValue, contextLabel = '') {
     {
       body,
       auth: true,
-    }
+    },
   );
   return resp;
 }
@@ -564,7 +562,7 @@ async function setOrderLeverage(productId, leverageValue, contextLabel = '') {
 async function ensureOrderLeverageOnce(
   productId,
   legLabel = '',
-  contextLabel = ''
+  contextLabel = '',
 ) {
   if (!ORDER_LEVERAGE_ENABLED) return;
   if (!_shouldApplyOrderLeverageForLeg(legLabel)) return;
@@ -584,15 +582,11 @@ async function ensureOrderLeverageOnce(
     await setOrderLeverage(pid, lev, contextLabel);
     _orderLeverageAppliedByProductId.set(pid, lev);
     info(
-      `ORDER_LEVERAGE set to ${lev} for product_id=${pid} ${
-        contextLabel ? '(' + contextLabel + ')' : ''
-      }`
+      `ORDER_LEVERAGE set to ${lev} for product_id=${pid} ${contextLabel ? '(' + contextLabel + ')' : ''}`,
     );
   } catch (e) {
     warn(
-      `ORDER_LEVERAGE failed for product_id=${pid} ${
-        contextLabel ? '(' + contextLabel + ')' : ''
-      }: ${e && e.message ? e.message : e}`
+      `ORDER_LEVERAGE failed for product_id=${pid} ${contextLabel ? '(' + contextLabel + ')' : ''}: ${e && e.message ? e.message : e}`,
     );
   }
 }
@@ -624,7 +618,7 @@ async function getProductIdBySymbol(symbol) {
       await cache.updateOne(
         { symbol: sym },
         { $set: { symbol: sym, product_id: pid, updatedAt: new Date() } },
-        { upsert: true }
+        { upsert: true },
       );
       return pid;
     }
@@ -806,7 +800,7 @@ function pickLastConfirmedCandle(
   tfMs,
   now = new Date(),
   allowFormingCandle = false,
-  candleGraceSeconds = 0
+  candleGraceSeconds = 0,
 ) {
   if (!candles || !candles.length) return null;
   const nowMs = now.getTime();
@@ -827,7 +821,7 @@ function enrichSupertrendCandles(
   stCandles,
   stockSymbol,
   stockName,
-  timeInterval
+  timeInterval,
 ) {
   return (stCandles || []).map((c) => ({
     ...c,
@@ -879,7 +873,7 @@ async function buildTodaySupertrend({
     tfMs,
     new Date(),
     allowFormingCandle,
-    candleGraceSeconds
+    candleGraceSeconds,
   );
 
   if (!candles.length || !lastConfirmed) {
@@ -894,7 +888,7 @@ async function buildTodaySupertrend({
 
   const lastConfirmedTs = new Date(lastConfirmed.ts).getTime();
   const confirmedCandles = candles.filter(
-    (c) => new Date(c.ts).getTime() <= lastConfirmedTs
+    (c) => new Date(c.ts).getTime() <= lastConfirmedTs,
   );
 
   const stCandlesRaw = addSupertrendToCandles(confirmedCandles, {
@@ -906,7 +900,7 @@ async function buildTodaySupertrend({
     stCandlesRaw,
     stockSymbol,
     stockName,
-    timeInterval
+    timeInterval,
   );
   const lastConfirmedStCandle = stCandles.length
     ? stCandles[stCandles.length - 1]
@@ -945,7 +939,7 @@ function parseMoneyness(m) {
   const ot = s.match(/^OTM(\d+)$/);
   if (ot) return { kind: 'OTM', n: Number(ot[1] || 0) };
   throw new Error(
-    `Invalid moneyness: ${m}. Use ATM, ITM1, ITM2, OTM1, OTM2...`
+    `Invalid moneyness: ${m}. Use ATM, ITM1, ITM2, OTM1, OTM2...`,
   );
 }
 
@@ -984,7 +978,7 @@ function pickStrikeByMoneyness(strikes, underlying, moneyness, optionType) {
 
 async function getAvailableStrikesForExpiry(
   optColl,
-  { underlying, optionType, expiry }
+  { underlying, optionType, expiry },
 ) {
   const strikes = await optColl.distinct('strike', {
     underlying: String(underlying),
@@ -999,7 +993,7 @@ async function getAvailableStrikesForExpiry(
 
 async function getLatestOptionTickByStrike(
   optColl,
-  { underlying, optionType, expiry, strike, atOrBeforeUtc }
+  { underlying, optionType, expiry, strike, atOrBeforeUtc },
 ) {
   const q = {
     underlying: String(underlying),
@@ -1033,13 +1027,13 @@ async function pickPeLegsFromTicks({
     strikes,
     underlyingPrice,
     mainMoneyness,
-    'P'
+    'P',
   );
   const hedgeStrike = pickStrikeByMoneyness(
     strikes,
     underlyingPrice,
     hedgeMoneyness,
-    'P'
+    'P',
   );
 
   if (!Number.isFinite(mainStrike) || !Number.isFinite(hedgeStrike)) {
@@ -1150,7 +1144,7 @@ async function findOpenSpreadForExpiry(expiryStr) {
       expiry: expiryStr,
       status: 'OPEN',
     },
-    { createdAt: -1 }
+    { createdAt: -1 },
   );
 }
 
@@ -1166,7 +1160,7 @@ async function findActiveSpreadForExpiry(expiryStr) {
       expiry: expiryStr,
       status: { $in: ['OPEN', 'PENDING_ENTRY', 'PENDING_EXIT'] },
     },
-    { createdAt: -1 }
+    { createdAt: -1 },
   );
 }
 
@@ -1223,10 +1217,10 @@ async function executeEntry({ runId, expiry, underlyingPrice, legs, nowIst }) {
   });
 
   const mainFills = fills.filter(
-    (f) => String(f.order_id) === String(mainOrder.id)
+    (f) => String(f.order_id) === String(mainOrder.id),
   );
   const hedgeFills = fills.filter(
-    (f) => String(f.order_id) === String(hedgeOrder.id)
+    (f) => String(f.order_id) === String(hedgeOrder.id),
   );
 
   const mainFillPrice =
@@ -1301,10 +1295,10 @@ async function executeExit({ runId, open, reason, nowIst }) {
   });
 
   const mainFills = fills.filter(
-    (f) => String(f.order_id) === String(mainExitOrder.id)
+    (f) => String(f.order_id) === String(mainExitOrder.id),
   );
   const hedgeFills = fills.filter(
-    (f) => String(f.order_id) === String(hedgeExitOrder.id)
+    (f) => String(f.order_id) === String(hedgeExitOrder.id),
   );
 
   const mainExitPrice =
@@ -1506,10 +1500,10 @@ async function maybeEnterTrade(nowIst) {
 
   info(
     `ENTRY expiry=${expiry} buySignal=${buySignal} underlying=${underlyingPrice.toFixed(
-      1
+      1,
     )} main=${legs.main.symbol}@${exec.main.fillPrice} hedge=${
       legs.hedge.symbol
-    }@${exec.hedge.fillPrice} qty=${QTY}`
+    }@${exec.hedge.fillPrice} qty=${QTY}`,
   );
   return {
     took: true,
@@ -1551,7 +1545,7 @@ async function maybeExitOpenSpread(nowIst, open) {
   let { stopLossPrice, targetPrice } = buildExitPricesForShort(
     mainEntry,
     STOPLOSS_PCT,
-    TARGET_PCT
+    TARGET_PCT,
   );
   if (!STOPLOSS_ENABLED) stopLossPrice = Number.NaN;
 
@@ -1641,7 +1635,7 @@ async function maybeExitOpenSpread(nowIst, open) {
       exec.prices.mainExitPrice
     } hedge=${open.hedge.symbol}@${
       exec.prices.hedgeExitPrice
-    } net=${exec.pnl.net.toFixed(6)}`
+    } net=${exec.pnl.net.toFixed(6)}`,
   );
   return { exited: true, reason: exec.reason, pnl: exec.pnl };
 }
@@ -1723,7 +1717,7 @@ const SuperTrendBullPutSpreadLiveTradeBTCController = expressAsyncHandler(
       error('Controller error', e);
       next(new AppError(e.message || 'Live trade controller failed', 500));
     }
-  }
+  },
 );
 
 // =====================
@@ -1751,7 +1745,7 @@ function startSuperTrendBullPutSpreadLiveTradeBTCron() {
         cronInFlight = false;
       }
     },
-    { timezone: TZ }
+    { timezone: TZ },
   );
 
   if (!pnlTimer) {
@@ -1778,10 +1772,10 @@ function startSuperTrendBullPutSpreadLiveTradeBTCron() {
         const openActive = await findOpenSpreadForExpiry(activeExpiry);
         info(
           `HEARTBEAT now=${nowIst.format(
-            'YYYY-MM-DD HH:mm:ss'
+            'YYYY-MM-DD HH:mm:ss',
           )} activeExpiry=${activeExpiry} inFlight=${cronInFlight} trades(activeExpiry)=${getDailyTradeCount(
-            activeExpiry
-          )} openActive=${!!openActive}`
+            activeExpiry,
+          )} openActive=${!!openActive}`,
         );
       } catch {
         // silent
