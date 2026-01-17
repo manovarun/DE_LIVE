@@ -247,7 +247,7 @@ function nowTs(tz = TZ) {
 function info(msg) {
   const line = `[${nowTs()}] [ST_BCS_BTC_LIVE] ${msg}`;
   // eslint-disable-next-line no-console
-  console.log(line);
+  // console.log(line);
   appendFileLog(line);
 }
 function warn(msg) {

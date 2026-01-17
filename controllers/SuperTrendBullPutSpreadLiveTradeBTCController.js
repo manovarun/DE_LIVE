@@ -269,7 +269,7 @@ function writeToFile(line) {
 function info(msg) {
   const line = `[${nowTs()}] [ST_BPS_BTC_LIVE] ${msg}`;
   // eslint-disable-next-line no-console
-  console.log(line);
+  // console.log(line);
   writeToFile(line);
 }
 function warn(msg) {
