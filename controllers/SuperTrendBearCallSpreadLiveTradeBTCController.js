@@ -84,6 +84,15 @@ const SQUARE_OFF_TIME =
 const DAILY_EXPIRY_CUTOFF =
   process.env.SUPERTREND_BCS_LIVE_DAILY_EXPIRY_CUTOFF || '17:30';
 
+// No-trade window: avoid entries during daily expiry hour; optionally force-close open spreads at the start.
+const NO_TRADE_START =
+  process.env.SUPERTREND_BCS_LIVE_NO_TRADE_START || '17:00';
+const NO_TRADE_END = process.env.SUPERTREND_BCS_LIVE_NO_TRADE_END || '18:00';
+const CLOSE_AT_NO_TRADE_START =
+  String(
+    process.env.SUPERTREND_BCS_LIVE_CLOSE_AT_NO_TRADE_START || 'true',
+  ).toLowerCase() === 'true';
+
 // SL/TP config (applies only to MAIN short call leg)
 const STOPLOSS_ENABLED =
   String(
@@ -523,7 +532,9 @@ async function setOrderLeverage(productId, leverageValue, contextLabel = '') {
 
   const body = { leverage: lev };
   info(
-    `ORDER_LEVERAGE request ${contextLabel ? '(' + contextLabel + ') ' : ''}product_id=${pid} body=${JSON.stringify(body)}`,
+    `ORDER_LEVERAGE request ${
+      contextLabel ? '(' + contextLabel + ') ' : ''
+    }product_id=${pid} body=${JSON.stringify(body)}`,
   );
 
   const resp = await deltaRequest(
@@ -560,11 +571,15 @@ async function ensureOrderLeverageOnce(
     await setOrderLeverage(pid, lev, contextLabel);
     _orderLeverageAppliedByProductId.set(pid, lev);
     info(
-      `ORDER_LEVERAGE set to ${lev} for product_id=${pid} ${contextLabel ? '(' + contextLabel + ')' : ''}`,
+      `ORDER_LEVERAGE set to ${lev} for product_id=${pid} ${
+        contextLabel ? '(' + contextLabel + ')' : ''
+      }`,
     );
   } catch (e) {
     warn(
-      `ORDER_LEVERAGE failed for product_id=${pid} ${contextLabel ? '(' + contextLabel + ')' : ''}: ${e && e.message ? e.message : e}`,
+      `ORDER_LEVERAGE failed for product_id=${pid} ${
+        contextLabel ? '(' + contextLabel + ')' : ''
+      }: ${e && e.message ? e.message : e}`,
     );
   }
 }
@@ -748,6 +763,20 @@ function getActiveDailyExpiry(nowIst) {
 // =====================
 // Futures candles → SuperTrend
 // =====================
+
+function getNoTradeWindow(nowIst) {
+  const dayStr = nowIst.format('YYYY-MM-DD');
+  const start = hhmmToMoment(dayStr, NO_TRADE_START, TZ);
+  let end = hhmmToMoment(dayStr, NO_TRADE_END, TZ);
+  // Support windows that cross midnight (end <= start).
+  if (end.isSameOrBefore(start)) end = end.add(1, 'day');
+  return { start, end };
+}
+
+function isInNoTradeWindow(nowIst) {
+  const w = getNoTradeWindow(nowIst);
+  return nowIst.isSameOrAfter(w.start) && nowIst.isBefore(w.end);
+}
 
 async function loadCandlesRange({
   stockSymbol,
@@ -1340,6 +1369,10 @@ async function maybeEnterTrade(nowIst) {
   if (nowIst.isSameOrAfter(squareOffIst))
     return { took: false, reason: 'AFTER_SQUAREOFF_TIME' };
 
+  // No-trade window: skip NEW entries during daily expiry hour
+  if (isInNoTradeWindow(nowIst))
+    return { took: false, reason: 'NO_TRADE_WINDOW' };
+
   const expiry = getActiveDailyExpiry(nowIst);
 
   // max trades/day guard (keyed by expiry)
@@ -1547,6 +1580,10 @@ async function maybeExitOpenSpread(nowIst, open) {
 
   let exitReason = null;
 
+  // No-trade window: force exit at/after NO_TRADE_START to avoid holding during daily expiry hour
+  if (!exitReason && CLOSE_AT_NO_TRADE_START && isInNoTradeWindow(nowIst))
+    exitReason = 'NO_TRADE_WINDOW';
+
   if (Number.isFinite(mainMark)) {
     if (Number.isFinite(stopLossPrice) && mainMark >= stopLossPrice)
       exitReason = 'STOPLOSS';
@@ -1686,6 +1723,9 @@ const SuperTrendBearCallSpreadLiveTradeBTCController = expressAsyncHandler(
           FROM_TIME,
           SQUARE_OFF_TIME,
           DAILY_EXPIRY_CUTOFF,
+          NO_TRADE_START,
+          NO_TRADE_END,
+          CLOSE_AT_NO_TRADE_START,
           STOPLOSS_ENABLED,
           STOPLOSS_PCT,
           TARGET_PCT,
