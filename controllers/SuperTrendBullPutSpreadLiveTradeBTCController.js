@@ -468,6 +468,83 @@ async function deltaRequest(method, path, { query, body, auth } = {}) {
 }
 
 // =====================
+// Ticker mark-price helper (Delta REST) - used for MTM display when last-trade ticks are stale
+// =====================
+
+const MTM_STALE_MS = 30000; // If last-trade tick older than this, use Delta ticker mark_price for MTM
+const _tickerMarkCacheBySymbol = new Map(); // symbol -> { price, tsMs }
+
+async function getMarkPriceFromDeltaTicker(symbol) {
+  const sym = String(symbol || '').trim();
+  if (!sym) return Number.NaN;
+
+  // Public endpoint (no auth): /v2/tickers/{symbol}
+  const path = `/v2/tickers/${encodeURIComponent(sym)}`;
+  const resp = await deltaRequest('GET', path, { auth: false });
+  const r = resp?.result || resp;
+
+  // Prefer mark_price (matches Delta UI better than last trade in illiquid options)
+  const mark = Number(r?.mark_price);
+  if (Number.isFinite(mark)) return mark;
+
+  // Fallback to mid of best bid/ask if present
+  const bid = Number(r?.quotes?.best_bid);
+  const ask = Number(r?.quotes?.best_ask);
+  if (Number.isFinite(bid) && Number.isFinite(ask)) return (bid + ask) / 2;
+
+  // Fallback to close/last
+  const close = Number(r?.close);
+  if (Number.isFinite(close)) return close;
+
+  return Number.NaN;
+}
+
+async function getMarkPriceFromDeltaTickerCached(symbol) {
+  const sym = String(symbol || '').trim();
+  if (!sym) return Number.NaN;
+
+  const now = Date.now();
+  const cached = _tickerMarkCacheBySymbol.get(sym);
+  // Small cache to avoid hammering REST on every poll
+  if (cached && Number.isFinite(cached.price) && now - cached.tsMs < 2000) {
+    return cached.price;
+  }
+
+  try {
+    const price = await getMarkPriceFromDeltaTicker(sym);
+    if (Number.isFinite(price))
+      _tickerMarkCacheBySymbol.set(sym, { price, tsMs: now });
+    return price;
+  } catch (e) {
+    return Number.NaN;
+  }
+}
+
+async function pickMtmMarkPriceForSymbol(
+  symbol,
+  lastTradePrice,
+  lastTradeAgeMs,
+) {
+  const ltp = Number(lastTradePrice);
+
+  // Prefer Delta ticker mark_price for MTM (matches exchange UI better than last trade).
+  const mark = await getMarkPriceFromDeltaTickerCached(symbol);
+  if (Number.isFinite(mark)) return mark;
+
+  // If mark is unavailable, fall back to last-traded price when it's reasonably fresh.
+  const age =
+    typeof lastTradeAgeMs === 'number' && Number.isFinite(lastTradeAgeMs)
+      ? lastTradeAgeMs
+      : Number.NaN;
+
+  const hasRecentTrade =
+    Number.isFinite(ltp) && Number.isFinite(age) && age <= MTM_STALE_MS;
+  if (hasRecentTrade) return ltp;
+
+  return ltp;
+}
+
+// =====================
 // Auto topup helper (Delta)
 // =====================
 
@@ -1036,6 +1113,71 @@ async function getLatestOptionTickByStrike(
   return row || null;
 }
 
+async function getLatestOptionTickBySymbolSafe(optColl, symbol, nowUtc) {
+  const sym = String(symbol || '').trim();
+  if (!sym)
+    return { tick: null, price: Number.NaN, tickTime: null, ageMs: null };
+
+  // Prefer exchange trade time (<= now) when available
+  let tick = null;
+  try {
+    tick = await optColl
+      .find({ symbol: sym, exchTradeTime: { $lte: nowUtc } })
+      .sort({ exchTradeTime: -1 })
+      .limit(1)
+      .next();
+  } catch (_) {
+    tick = null;
+  }
+
+  // Fallback 1: ingest time (<= now)
+  if (!tick) {
+    try {
+      tick = await optColl
+        .find({ symbol: sym, ingestTs: { $lte: nowUtc } })
+        .sort({ ingestTs: -1 })
+        .limit(1)
+        .next();
+    } catch (_) {
+      tick = null;
+    }
+  }
+
+  // Fallback 2: absolute latest by exchTradeTime
+  if (!tick) {
+    try {
+      tick = await optColl
+        .find({ symbol: sym })
+        .sort({ exchTradeTime: -1 })
+        .limit(1)
+        .next();
+    } catch (_) {
+      tick = null;
+    }
+  }
+
+  // Fallback 3: absolute latest by ingestTs
+  if (!tick) {
+    try {
+      tick = await optColl
+        .find({ symbol: sym })
+        .sort({ ingestTs: -1 })
+        .limit(1)
+        .next();
+    } catch (_) {
+      tick = null;
+    }
+  }
+
+  const price = Number(tick?.price);
+  const tickTime = tick?.exchTradeTime || tick?.ingestTs || null;
+  const ageMs = tickTime
+    ? nowUtc.getTime() - new Date(tickTime).getTime()
+    : null;
+
+  return { tick, price, tickTime, ageMs };
+}
+
 async function pickPeLegsFromTicks({
   optColl,
   expiry,
@@ -1560,19 +1702,32 @@ async function maybeExitOpenSpread(nowIst, open) {
   const optColl = await getOptionCollectionForNow(db);
   const nowUtc = new Date(nowIst.clone().utc().valueOf());
 
-  const mainTick = await optColl
-    .find({ symbol: open.main.symbol, exchTradeTime: { $lte: nowUtc } })
-    .sort({ exchTradeTime: -1 })
-    .limit(1)
-    .next();
-  const hedgeTick = await optColl
-    .find({ symbol: open.hedge.symbol, exchTradeTime: { $lte: nowUtc } })
-    .sort({ exchTradeTime: -1 })
-    .limit(1)
-    .next();
+  const mainRes = await getLatestOptionTickBySymbolSafe(
+    optColl,
+    open.main.symbol,
+    nowUtc,
+  );
+  const hedgeRes = await getLatestOptionTickBySymbolSafe(
+    optColl,
+    open.hedge.symbol,
+    nowUtc,
+  );
 
-  const mainMark = Number(mainTick?.price);
-  const hedgeMark = Number(hedgeTick?.price);
+  // Use latest available mark; if missing, fall back to last MTM, then entry price.
+  const prevMainMtm = Number(open?.mtm?.mainPrice);
+  const prevHedgeMtm = Number(open?.mtm?.hedgePrice);
+
+  const mainMark = Number.isFinite(mainRes.price)
+    ? mainRes.price
+    : Number.isFinite(prevMainMtm)
+      ? prevMainMtm
+      : Number(open?.main?.entry?.price);
+
+  const hedgeMark = Number.isFinite(hedgeRes.price)
+    ? hedgeRes.price
+    : Number.isFinite(prevHedgeMtm)
+      ? prevHedgeMtm
+      : Number(open?.hedge?.entry?.price);
 
   const mainEntry = Number(open?.main?.entry?.price);
   let { stopLossPrice, targetPrice } = buildExitPricesForShort(
@@ -1634,20 +1789,39 @@ async function maybeExitOpenSpread(nowIst, open) {
   if (!exitReason && shouldSquareOff) exitReason = 'SQUARE_OFF';
 
   if (!exitReason) {
-    if (Number.isFinite(mainMark) && Number.isFinite(hedgeMark)) {
-      const pnl = computeSpreadPnl({
-        mainEntry: Number(open?.main?.entry?.price),
-        mainExit: mainMark,
-        hedgeEntry: Number(open?.hedge?.entry?.price),
-        hedgeExit: hedgeMark,
-        qty: Number(open?.config?.qty || QTY),
-      });
+    // Update MTM (store best-effort marks; pnl only when both marks are finite)
+    const mainMtmMark = await pickMtmMarkPriceForSymbol(
+      open.main.symbol,
+      mainMark,
+      mainRes?.ageMs,
+    );
+    const hedgeMtmMark = await pickMtmMarkPriceForSymbol(
+      open.hedge.symbol,
+      hedgeMark,
+      hedgeRes?.ageMs,
+    );
+
+    const hasMain = Number.isFinite(mainMtmMark);
+    const hasHedge = Number.isFinite(hedgeMtmMark);
+
+    if (hasMain || hasHedge) {
+      const pnl =
+        hasMain && hasHedge
+          ? computeSpreadPnl({
+              mainEntry: Number(open?.main?.entry?.price),
+              mainExit: mainMtmMark,
+              hedgeEntry: Number(open?.hedge?.entry?.price),
+              hedgeExit: hedgeMtmMark,
+              qty: Number(open?.config?.qty || QTY),
+            })
+          : null;
+
       await updateSpreadDoc(open._id, {
         mtm: {
           time: nowIst.toISOString(true),
-          mainPrice: mainMark,
-          hedgePrice: hedgeMark,
-          pnl,
+          mainPrice: mainMtmMark,
+          hedgePrice: hedgeMtmMark,
+          ...(pnl ? { pnl } : {}),
         },
       });
     }
