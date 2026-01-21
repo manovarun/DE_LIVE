@@ -1737,7 +1737,8 @@ async function maybeExitOpenSpread(nowIst, open) {
       exitReason = 'TARGET';
   }
   // SuperTrend reversal: for BPS exit when SELL signal appears
-  // Mid-candle exit: evaluate reversal on the forming candle, but only act after 50% of the candle duration has elapsed.
+  // NOTE: Reversal exit is evaluated ONLY on the last fully-closed (confirmed) SuperTrend candle (no mid-candle exits).
+  // If the reversal signal persists on the closed candle, exit ASAP at the beginning of the next candle (next cron tick).
   if (!exitReason) {
     const st = await buildTodaySupertrend({
       nowIst,
@@ -1750,26 +1751,14 @@ async function maybeExitOpenSpread(nowIst, open) {
       changeAtrCalculation: CHANGE_ATR_CALC,
       minCandles: MIN_CANDLES,
       candleGraceSeconds: CANDLE_GRACE_SECONDS,
-      // force forming candle evaluation for reversal exit only
-      allowFormingCandle: true,
+      // force closed candle evaluation for reversal exit only
+      allowFormingCandle: false,
       futCandlesCollection: FUT_CANDLES_COLLECTION,
     });
     const sig = st.lastConfirmedStCandle;
     const sellSignal = !!(sig?.supertrend?.sellSignal ?? sig?.sellSignal);
 
-    if (sellSignal) {
-      const tfMs = Number(st.tfMs) || tfToMs(INDEX_TF);
-      const startTs = st.lastConfirmedCandle?.ts || sig?.ts;
-      const startMs = startTs ? new Date(startTs).getTime() : Number.NaN;
-      const midMs =
-        Number.isFinite(startMs) && Number.isFinite(tfMs)
-          ? startMs + tfMs / 2
-          : Number.NaN;
-      const nowMs = nowIst.valueOf();
-      // If midpoint cannot be computed, fall back to existing behavior (exit on confirmed signal).
-      if (!Number.isFinite(midMs) || nowMs >= midMs)
-        exitReason = 'ST_REVERSAL_SELL';
-    }
+    if (sellSignal) exitReason = 'ST_REVERSAL_SELL';
   }
   if (!exitReason) {
     // Update MTM (store best-effort marks; pnl only when both marks are finite)
