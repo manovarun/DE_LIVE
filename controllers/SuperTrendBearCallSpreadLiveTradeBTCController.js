@@ -77,9 +77,6 @@ const OPT_TICKS_PREFIX = process.env.DELTA_OPT_TICKS_PREFIX || 'OptionsTicks';
 
 const INDEX_TF = process.env.SUPERTREND_BCS_LIVE_INDEX_TF || 'M3';
 const FROM_TIME = process.env.SUPERTREND_BCS_LIVE_FROM_TIME || '00:00';
-const SQUARE_OFF_TIME =
-  process.env.SUPERTREND_BCS_LIVE_SQUARE_OFF_TIME || '23:59';
-
 // Daily expiry cutoff (IST) for Delta BTC daily options. After this time, the "active" expiry rolls to next calendar day.
 const DAILY_EXPIRY_CUTOFF =
   process.env.SUPERTREND_BCS_LIVE_DAILY_EXPIRY_CUTOFF || '17:30';
@@ -87,7 +84,7 @@ const DAILY_EXPIRY_CUTOFF =
 // No-trade window: avoid entries during daily expiry hour; optionally force-close open spreads at the start.
 const NO_TRADE_START =
   process.env.SUPERTREND_BCS_LIVE_NO_TRADE_START || '17:00';
-const NO_TRADE_END = process.env.SUPERTREND_BCS_LIVE_NO_TRADE_END || '18:00';
+const NO_TRADE_END = process.env.SUPERTREND_BCS_LIVE_NO_TRADE_END || '18:30';
 const CLOSE_AT_NO_TRADE_START =
   String(
     process.env.SUPERTREND_BCS_LIVE_CLOSE_AT_NO_TRADE_START || 'true',
@@ -1505,12 +1502,8 @@ async function maybeEnterTrade(nowIst) {
 
   // time guard
   const fromIst = hhmmToMoment(dayStr, FROM_TIME, TZ);
-  const squareOffIst = hhmmToMoment(dayStr, SQUARE_OFF_TIME, TZ);
   if (nowIst.isBefore(fromIst))
     return { took: false, reason: 'BEFORE_FROM_TIME' };
-  if (nowIst.isSameOrAfter(squareOffIst))
-    return { took: false, reason: 'AFTER_SQUAREOFF_TIME' };
-
   // No-trade window: skip NEW entries during daily expiry hour
   if (isInNoTradeWindow(nowIst))
     return { took: false, reason: 'NO_TRADE_WINDOW' };
@@ -1531,7 +1524,6 @@ async function maybeEnterTrade(nowIst) {
     stockName: STOCK_NAME,
     timeInterval: INDEX_TF,
     fromTime: FROM_TIME,
-    squareOffTime: SQUARE_OFF_TIME,
     atrPeriod: ATR_PERIOD,
     multiplier: MULTIPLIER,
     changeAtrCalculation: CHANGE_ATR_CALC,
@@ -1591,7 +1583,6 @@ async function maybeEnterTrade(nowIst) {
     config: {
       timezone: TZ,
       fromTime: FROM_TIME,
-      squareOffTime: SQUARE_OFF_TIME,
       atrPeriod: ATR_PERIOD,
       multiplier: MULTIPLIER,
       changeAtrCalculation: CHANGE_ATR_CALC,
@@ -1687,10 +1678,6 @@ async function maybeExitOpenSpread(nowIst, open) {
 
   // If controller restarts with an OPEN spread, re-apply auto-topup once (best-effort)
   await ensureAutoTopupOnce(open?.main?.product_id, 'OPEN_MAIN');
-
-  const dayStr = nowIst.format('YYYY-MM-DD');
-  const squareOffIst = hhmmToMoment(dayStr, SQUARE_OFF_TIME, TZ);
-  const shouldSquareOff = nowIst.isSameOrAfter(squareOffIst);
   // Get latest ticks for main/hedge (current month collection)
   const db = getDb();
   const optColl = await getOptionCollectionForNow(db);
@@ -1753,7 +1740,6 @@ async function maybeExitOpenSpread(nowIst, open) {
       stockName: STOCK_NAME,
       timeInterval: INDEX_TF,
       fromTime: FROM_TIME,
-      squareOffTime: SQUARE_OFF_TIME,
       atrPeriod: ATR_PERIOD,
       multiplier: MULTIPLIER,
       changeAtrCalculation: CHANGE_ATR_CALC,
@@ -1766,9 +1752,6 @@ async function maybeExitOpenSpread(nowIst, open) {
     const buySignal = !!(sig?.supertrend?.buySignal ?? sig?.buySignal);
     if (buySignal) exitReason = 'ST_REVERSAL_BUY';
   }
-
-  if (!exitReason && shouldSquareOff) exitReason = 'SQUARE_OFF';
-
   if (!exitReason) {
     // Update MTM (store best-effort marks; pnl only when both marks are finite)
     const mainMtmMark = await pickMtmMarkPriceForSymbol(
@@ -1893,7 +1876,6 @@ const SuperTrendBearCallSpreadLiveTradeBTCController = expressAsyncHandler(
           OPT_TICKS_PREFIX,
           INDEX_TF,
           FROM_TIME,
-          SQUARE_OFF_TIME,
           DAILY_EXPIRY_CUTOFF,
           NO_TRADE_START,
           NO_TRADE_END,
