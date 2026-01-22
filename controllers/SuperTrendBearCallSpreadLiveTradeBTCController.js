@@ -1745,12 +1745,20 @@ async function maybeExitOpenSpread(nowIst, open) {
       changeAtrCalculation: CHANGE_ATR_CALC,
       minCandles: MIN_CANDLES,
       candleGraceSeconds: CANDLE_GRACE_SECONDS,
-      allowFormingCandle: ALLOW_FORMING_CANDLE,
+      // force closed candle evaluation for reversal exit only
+      allowFormingCandle: false,
       futCandlesCollection: FUT_CANDLES_COLLECTION,
     });
     const sig = st.lastConfirmedStCandle;
-    const buySignal = !!(sig?.supertrend?.buySignal ?? sig?.buySignal);
-    if (buySignal) exitReason = 'ST_REVERSAL_BUY';
+    const stx = sig?.supertrend || {};
+    const buySignal = !!(stx.buySignal ?? sig?.buySignal);
+    const isUpTrend = !!(stx.isUpTrend ?? sig?.isUpTrend);
+    const trendVal = Number(stx.trend ?? sig?.trend);
+
+    // Robust reversal detection: even if the one-candle `buySignal` is missed (late candle insert),
+    // the UP trend state persists and should still trigger the reversal exit.
+    if (buySignal || isUpTrend || trendVal === 1)
+      exitReason = 'ST_REVERSAL_BUY';
   }
   if (!exitReason) {
     // Update MTM (store best-effort marks; pnl only when both marks are finite)

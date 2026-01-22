@@ -1756,9 +1756,15 @@ async function maybeExitOpenSpread(nowIst, open) {
       futCandlesCollection: FUT_CANDLES_COLLECTION,
     });
     const sig = st.lastConfirmedStCandle;
-    const sellSignal = !!(sig?.supertrend?.sellSignal ?? sig?.sellSignal);
+    const stx = sig?.supertrend || {};
+    const sellSignal = !!(stx.sellSignal ?? sig?.sellSignal);
+    const isDownTrend = !!(stx.isDownTrend ?? sig?.isDownTrend);
+    const trendVal = Number(stx.trend ?? sig?.trend);
 
-    if (sellSignal) exitReason = 'ST_REVERSAL_SELL';
+    // Robust reversal detection: even if the one-candle `sellSignal` is missed (late candle insert),
+    // the DOWN trend state persists and should still trigger the reversal exit.
+    if (sellSignal || isDownTrend || trendVal === -1)
+      exitReason = 'ST_REVERSAL_SELL';
   }
   if (!exitReason) {
     // Update MTM (store best-effort marks; pnl only when both marks are finite)
