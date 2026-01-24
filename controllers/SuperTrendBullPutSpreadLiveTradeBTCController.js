@@ -955,9 +955,14 @@ async function buildTodaySupertrend({
   const fromIst = hhmmToMoment(dayStr, fromTime, TZ);
   const toIst = nowIst.clone();
 
+  const warmupCandles = Math.max(
+    2 * minCandles,
+    minCandles + atrPeriod + 5,
+    50,
+  );
   const warmupFromIst = fromIst
     .clone()
-    .subtract(Math.max(2 * minCandles, 50), 'minutes');
+    .subtract(warmupCandles * tfMs, 'milliseconds');
   const warmupFromUtc = new Date(warmupFromIst.clone().utc().valueOf());
 
   const toUtc = new Date(toIst.clone().utc().valueOf());

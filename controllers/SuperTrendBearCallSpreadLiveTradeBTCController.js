@@ -945,9 +945,14 @@ async function buildTodaySupertrend({
   const toIst = nowIst.clone();
 
   // Warmup: pull additional history so ATR stabilizes
+  const warmupCandles = Math.max(
+    2 * minCandles,
+    minCandles + atrPeriod + 5,
+    50,
+  );
   const warmupFromIst = fromIst
     .clone()
-    .subtract(Math.max(2 * minCandles, 50), 'minutes');
+    .subtract(warmupCandles * tfMs, 'milliseconds');
   const warmupFromUtc = new Date(warmupFromIst.clone().utc().valueOf());
 
   const fromUtc = new Date(fromIst.clone().utc().valueOf());
