@@ -167,9 +167,14 @@ const LOTS = Math.max(
   1,
   parseInt(process.env.SUPERTREND_BPS_LIVE_LOTS || '1', 10) || 1,
 );
-const QTY = LOT_SIZE * LOTS;
-// Delta order size must be an integer (contracts)
 const ORDER_SIZE = LOTS;
+// Contract multiplier (BTC per option contract) used for PnL scaling.
+// If SUPERTREND_BPS_LIVE_CONTRACT_MULTIPLIER is not set, fall back to LOT_SIZE for backward compatibility.
+const CONTRACT_MULTIPLIER = Number(
+  process.env.SUPERTREND_BPS_LIVE_CONTRACT_MULTIPLIER || LOT_SIZE || 0.001,
+);
+// QTY is kept for PnL scaling/logging parity with paper controller
+const QTY = CONTRACT_MULTIPLIER * ORDER_SIZE;
 
 // Delta REST
 const DELTA_BASE = (
@@ -1280,6 +1285,23 @@ function computeSpreadPnl({ mainEntry, mainExit, hedgeEntry, hedgeExit, qty }) {
   return { qty, mainPoints, hedgePoints, netPoints, net };
 }
 
+function resolveQtyForPnl(spreadDoc) {
+  // Prefer deterministic qty = lots * contractMultiplier (Delta contract_value)
+  const lots = Number(spreadDoc?.config?.lots);
+  const cm =
+    Number(spreadDoc?.config?.contractMultiplier) ||
+    Number(process.env.SUPERTREND_BPS_LIVE_CONTRACT_MULTIPLIER) ||
+    CONTRACT_MULTIPLIER;
+  if (Number.isFinite(lots) && lots > 0 && Number.isFinite(cm) && cm > 0)
+    return lots * cm;
+
+  const q = Number(spreadDoc?.config?.qty);
+  if (Number.isFinite(q) && q > 0) return q;
+
+  return QTY;
+}
+
+
 // =====================
 // Live trade state
 // =====================
@@ -1486,7 +1508,7 @@ async function executeExit({ runId, open, reason, nowIst }) {
     mainExit: mainExitPrice,
     hedgeEntry: Number(open?.hedge?.entry?.price),
     hedgeExit: hedgeExitPrice,
-    qty: Number(open?.config?.qty || QTY),
+    qty: resolveQtyForPnl(open),
   });
 
   const tookMs = Date.now() - exitStart;
@@ -1795,7 +1817,7 @@ async function maybeExitOpenSpread(nowIst, open) {
               mainExit: mainMtmMark,
               hedgeEntry: Number(open?.hedge?.entry?.price),
               hedgeExit: hedgeMtmMark,
-              qty: Number(open?.config?.qty || QTY),
+              qty: resolveQtyForPnl(open),
             })
           : null;
 
