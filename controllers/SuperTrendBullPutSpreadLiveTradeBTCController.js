@@ -1301,7 +1301,6 @@ function resolveQtyForPnl(spreadDoc) {
   return QTY;
 }
 
-
 // =====================
 // Live trade state
 // =====================
