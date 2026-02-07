@@ -207,9 +207,9 @@ const ORDER_LEVERAGE_APPLY_TO = String(
   process.env.SUPERTREND_BCS_LIVE_ORDER_LEVERAGE_APPLY_TO || 'MAIN',
 ).toUpperCase(); // MAIN | HEDGE | BOTH
 
-const STRATEGY = 'SUPERTREND_BEAR_CALL_SPREAD_LIVE_BTC_DELTA';
-const SPREADS_COLLECTION = 'SupertrendBcsLiveSpreads';
-const PRODUCT_CACHE_COLLECTION = 'DeltaProductCache';
+const STRATEGY = 'ST_BEAR_CALL_SPREAD_LIVE_BTC_DELTA';
+const SPREADS_COLLECTION = 'SupertrendBcsDeltaLive';
+const PRODUCT_CACHE_COLLECTION = 'DeltaTradeCache';
 
 // =====================
 // Logging helpers
