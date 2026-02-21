@@ -1,18 +1,23 @@
 // indicators/ema.js
 
-const DECIMALS = 2;
-const round = (v) =>
-  v === null || v === undefined ? null : Number(v.toFixed(DECIMALS));
+const isFiniteNumber = (v) => Number.isFinite(Number(v));
+
+function toPositiveInteger(v, name) {
+  const n = Number(v);
+  if (!Number.isInteger(n) || n < 1) {
+    throw new Error(`${name} must be a positive integer`);
+  }
+  return n;
+}
 
 function calculateEMA(values, period) {
   if (!Array.isArray(values)) {
     throw new Error('values must be an array');
   }
-  if (!Number.isFinite(Number(period)) || period < 1) {
-    throw new Error('period must be a positive integer');
+  const p = toPositiveInteger(period, 'period');
+  if (values.some((v) => !isFiniteNumber(v))) {
+    throw new Error('values must contain only finite numbers');
   }
-
-  const p = Number(period);
   const result = new Array(values.length).fill(null);
   const alpha = 2 / (p + 1);
 
@@ -20,7 +25,7 @@ function calculateEMA(values, period) {
   let emaPrev = null;
 
   for (let i = 0; i < values.length; i++) {
-    const price = Number(values[i]) || 0;
+    const price = Number(values[i]);
 
     if (i < p) {
       sum += price;
@@ -38,7 +43,10 @@ function calculateEMA(values, period) {
   return result;
 }
 
-function addEMAsToCandles(candles, { periods, priceField = 'close' } = {}) {
+function addEMAsToCandles(
+  candles,
+  { periods, priceField = 'close', decimals = null } = {},
+) {
   if (!Array.isArray(candles)) {
     throw new Error('candles must be an array');
   }
@@ -47,8 +55,8 @@ function addEMAsToCandles(candles, { periods, priceField = 'close' } = {}) {
   }
 
   const cleanPeriods = periods
-    .map((p) => Number(p))
-    .filter((p) => Number.isFinite(p) && p >= 1);
+    .map((p) => toPositiveInteger(p, 'period'))
+    .filter((p, idx, arr) => arr.indexOf(p) === idx);
 
   if (cleanPeriods.length === 0) {
     throw new Error(
@@ -56,7 +64,27 @@ function addEMAsToCandles(candles, { periods, priceField = 'close' } = {}) {
     );
   }
 
-  const values = candles.map((c) => Number(c[priceField]) || 0);
+  const values = candles.map((c, idx) => {
+    const v = Number(c?.[priceField]);
+    if (!Number.isFinite(v)) {
+      throw new Error(
+        `candles[${idx}].${priceField} must be a finite number for EMA calculation`,
+      );
+    }
+    return v;
+  });
+
+  const useRounding =
+    decimals !== null &&
+    decimals !== undefined &&
+    Number.isInteger(Number(decimals)) &&
+    Number(decimals) >= 0;
+  const round = (v) =>
+    v === null || v === undefined
+      ? null
+      : useRounding
+        ? Number(v.toFixed(Number(decimals)))
+        : v;
 
   const emaMap = {};
   for (const period of cleanPeriods) {

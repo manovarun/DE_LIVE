@@ -7,7 +7,7 @@
  * - Futures candles are read from a MongoDB collection (default: btcusd_candles_ts)
  * - Options ticks are read from monthly collections created by DeltaOptionsWsTicksCaptureLiveController
  *   (default prefix: OptionsTicks => OptionsTicksMMYYYY)
- * - Options expiry is treated as DAILY expiry (expiry string = YYYY-MM-DD in configured timezone)
+ * - Options expiry is treated as WEEKLY expiry (expiry string = YYYY-MM-DD in configured timezone)
  * - Risk (SL/TP) applies ONLY on MAIN short call leg
  *
  * Delta REST auth/signing per Delta.Exchange_doc.txt:
@@ -54,6 +54,7 @@ try {
     ({ addSupertrendToCandles } = require('../supertrend'));
   }
 }
+const { addEMAsToCandles } = require('../indicators/ema');
 
 // =====================
 // Env / Configuration
@@ -77,9 +78,11 @@ const OPT_TICKS_PREFIX = process.env.DELTA_OPT_TICKS_PREFIX || 'OptionsTicks';
 
 const INDEX_TF = process.env.SUPERTREND_BCS_LIVE_INDEX_TF || 'M3';
 const FROM_TIME = process.env.SUPERTREND_BCS_LIVE_FROM_TIME || '00:00';
-// Daily expiry cutoff (IST) for Delta BTC daily options. After this time, the "active" expiry rolls to next calendar day.
-const DAILY_EXPIRY_CUTOFF =
-  process.env.SUPERTREND_BCS_LIVE_DAILY_EXPIRY_CUTOFF || '17:30';
+// Weekly expiry cutoff (IST) for Delta BTC weekly options (Friday). After this time, the "active" expiry rolls to next Friday.
+const WEEKLY_EXPIRY_CUTOFF =
+  process.env.SUPERTREND_BCS_LIVE_WEEKLY_EXPIRY_CUTOFF ||
+  process.env.SUPERTREND_BCS_LIVE_DAILY_EXPIRY_CUTOFF ||
+  '17:30';
 
 // No-trade window: avoid entries during daily expiry hour; optionally force-close open spreads at the start.
 const NO_TRADE_START =
@@ -99,10 +102,25 @@ const STOPLOSS_PCT = Number(
   process.env.SUPERTREND_BCS_LIVE_STOPLOSS_PCT || 5000,
 );
 const TARGET_PCT = Number(process.env.SUPERTREND_BCS_LIVE_TARGET_PCT || 50);
+const TRAILING_STOP_PCT = Number(
+  process.env.SUPERTREND_BCS_LIVE_TRAILING_STOP_PCT || 0,
+);
 
 const MAIN_MONEYNESS = process.env.SUPERTREND_BCS_LIVE_MAIN_MONEYNESS || 'ATM';
+const HEDGE_MONEYNESS_RAW = process.env.SUPERTREND_BCS_LIVE_HEDGE_MONEYNESS;
 const HEDGE_MONEYNESS =
-  process.env.SUPERTREND_BCS_LIVE_HEDGE_MONEYNESS || 'OTM3';
+  HEDGE_MONEYNESS_RAW === undefined ? 'OTM3' : String(HEDGE_MONEYNESS_RAW).trim();
+const HEDGE_ENABLED = (() => {
+  const v = String(HEDGE_MONEYNESS || '').trim().toUpperCase();
+  return !(
+    !v ||
+    v === 'NONE' ||
+    v === 'OFF' ||
+    v === 'FALSE' ||
+    v === 'DISABLED' ||
+    v === 'NAKED'
+  );
+})();
 
 const ATR_PERIOD = Math.max(
   1,
@@ -112,6 +130,36 @@ const MULTIPLIER = Math.max(
   0.1,
   Number(process.env.SUPERTREND_BCS_LIVE_MULTIPLIER || 3),
 );
+// Role-specific SuperTrend params (for multi-timeframe setups)
+// - TREND_* : used for HTF trend filter (e.g., M10)
+// - ENTRY_* : used for entry signal timeframe (INDEX_TF)
+// - EXIT_*  : used for exit/reversal timeframe (EXIT_TF)
+// Defaults fall back to base ATR_PERIOD/MULTIPLIER for backward compatibility.
+const TREND_ATR_PERIOD = Math.max(
+  1,
+  Number(process.env.SUPERTREND_BCS_LIVE_TREND_ATR_PERIOD || ATR_PERIOD),
+);
+const TREND_MULTIPLIER = Math.max(
+  0.1,
+  Number(process.env.SUPERTREND_BCS_LIVE_TREND_MULTIPLIER || MULTIPLIER),
+);
+const ENTRY_ATR_PERIOD = Math.max(
+  1,
+  Number(process.env.SUPERTREND_BCS_LIVE_ENTRY_ATR_PERIOD || ATR_PERIOD),
+);
+const ENTRY_MULTIPLIER = Math.max(
+  0.1,
+  Number(process.env.SUPERTREND_BCS_LIVE_ENTRY_MULTIPLIER || MULTIPLIER),
+);
+const EXIT_ATR_PERIOD = Math.max(
+  1,
+  Number(process.env.SUPERTREND_BCS_LIVE_EXIT_ATR_PERIOD || ATR_PERIOD),
+);
+const EXIT_MULTIPLIER = Math.max(
+  0.1,
+  Number(process.env.SUPERTREND_BCS_LIVE_EXIT_MULTIPLIER || MULTIPLIER),
+);
+
 const CHANGE_ATR_CALC =
   String(
     process.env.SUPERTREND_BCS_LIVE_CHANGE_ATR_CALC || 'true',
@@ -138,15 +186,113 @@ const MIN_CANDLES = Math.max(
   Number(process.env.SUPERTREND_BCS_LIVE_MIN_CANDLES || 20),
 );
 
+const HTF_INDEX_TF = String(
+  process.env.SUPERTREND_BCS_LIVE_HTF_INDEX_TF || '',
+).trim();
+const HTF_ENABLED =
+  String(process.env.SUPERTREND_BCS_LIVE_HTF_ENABLED ?? 'true').toLowerCase() ===
+  'true';
+const MOMENTUM_HTF_ENABLED =
+  String(
+    process.env.SUPERTREND_BCS_LIVE_MOMENTUM_HTF_ENABLED || 'false',
+  ).toLowerCase() === 'true';
+const MOMENTUM_HTF_INDEX_TF = String(
+  process.env.SUPERTREND_BCS_LIVE_MOMENTUM_HTF_INDEX_TF || '',
+).trim();
+const MOMENTUM_FAST_EMA_RAW = envPositiveInt(
+  'SUPERTREND_BCS_LIVE_MOMENTUM_FAST_EMA',
+  9,
+);
+const MOMENTUM_SLOW_EMA_RAW = envPositiveInt(
+  'SUPERTREND_BCS_LIVE_MOMENTUM_SLOW_EMA',
+  21,
+);
+const { fast: MOMENTUM_FAST_EMA, slow: MOMENTUM_SLOW_EMA } =
+  normalizeMomentumEmaPair(
+    MOMENTUM_FAST_EMA_RAW,
+    MOMENTUM_SLOW_EMA_RAW,
+    'SUPERTREND_BCS_LIVE',
+  );
+const EXIT_TF =
+  String(process.env.SUPERTREND_BCS_LIVE_EXIT_TF || INDEX_TF).trim() ||
+  INDEX_TF;
+
+// Note: HTF has fewer candles intraday; keep this separate from MIN_CANDLES
+const HTF_MIN_CANDLES = Math.max(
+  5,
+  Number(process.env.SUPERTREND_BCS_LIVE_HTF_MIN_CANDLES || 20),
+);
+const MOMENTUM_MIN_CANDLES = Math.max(
+  MOMENTUM_SLOW_EMA + 2,
+  envPositiveInt(
+    'SUPERTREND_BCS_LIVE_MOMENTUM_MIN_CANDLES',
+    MOMENTUM_SLOW_EMA + 2,
+  ),
+);
+const EXIT_MIN_CANDLES = Math.max(
+  5,
+  Number(process.env.SUPERTREND_BCS_LIVE_EXIT_MIN_CANDLES || MIN_CANDLES),
+);
+
 const CANDLE_GRACE_SECONDS = Math.max(
   0,
   Number(process.env.SUPERTREND_BCS_LIVE_CANDLE_GRACE_SECONDS || 5),
 );
+const EXIT_CANDLE_GRACE_SECONDS = Math.max(
+  0,
+  Number(
+    process.env.SUPERTREND_BCS_LIVE_EXIT_CANDLE_GRACE_SECONDS ||
+      CANDLE_GRACE_SECONDS,
+  ),
+);
+const HTF_CANDLE_GRACE_SECONDS = Math.max(
+  0,
+  Number(
+    process.env.SUPERTREND_BCS_LIVE_HTF_CANDLE_GRACE_SECONDS ||
+      CANDLE_GRACE_SECONDS,
+  ),
+);
+const MOMENTUM_CANDLE_GRACE_SECONDS = Math.max(
+  0,
+  Number(
+    process.env.SUPERTREND_BCS_LIVE_MOMENTUM_CANDLE_GRACE_SECONDS ||
+      CANDLE_GRACE_SECONDS,
+  ),
+);
+
 const ALLOW_FORMING_CANDLE =
   String(
     process.env.SUPERTREND_BCS_LIVE_ALLOW_FORMING_CANDLE || 'false',
   ).toLowerCase() === 'true';
+const FORMING_MIN_ELAPSED_PCT = Math.min(
+  100,
+  Math.max(
+    0,
+    Number(process.env.SUPERTREND_BCS_LIVE_FORMING_MIN_ELAPSED_PCT || 50),
+  ),
+);
+const FORMING_SIGNAL_HOLD_SECS = Math.max(
+  0,
+  Number(process.env.SUPERTREND_BCS_LIVE_FORMING_SIGNAL_HOLD_SECS || 0),
+);
+const EXIT_ON_NEXT_OPEN_MISMATCH =
+  String(
+    process.env.SUPERTREND_BCS_LIVE_EXIT_ON_NEXT_OPEN_MISMATCH ??
+      process.env.SUPERTREND_BCS_LIVE_EXIT_ON_NEXT_CLOSE_MISMATCH ??
+      'false',
+  ).toLowerCase() === 'true';
 
+// Candle timestamp semantics for futures candles collection:
+// - If true: candle `ts` in DB represents candle CLOSE time (end).
+// - If false: candle `ts` represents candle OPEN time (start).
+// NOTE: If `ts` is actually CLOSE but treated as OPEN, signals appear ~1 TF late.
+const CANDLE_TS_IS_CLOSE =
+  String(
+    process.env.SUPERTREND_BCS_LIVE_CANDLE_TS_IS_CLOSE || 'false',
+  ).toLowerCase() === 'true';
+
+let candleTsHeuristicWarned = false;
+const formingSignalHoldState = new Map();
 const PNL_POLL_MS = Math.max(
   2000,
   Number(process.env.SUPERTREND_BCS_LIVE_PNL_POLL_MS || 15000),
@@ -207,9 +353,9 @@ const ORDER_LEVERAGE_APPLY_TO = String(
   process.env.SUPERTREND_BCS_LIVE_ORDER_LEVERAGE_APPLY_TO || 'MAIN',
 ).toUpperCase(); // MAIN | HEDGE | BOTH
 
-const STRATEGY = 'ST_BEAR_CALL_SPREAD_LIVE_BTC_DELTA';
-const SPREADS_COLLECTION = 'SupertrendBcsDeltaLive';
-const PRODUCT_CACHE_COLLECTION = 'DeltaTradeCache';
+const STRATEGY = 'ST_BCS_M5_STRGY';
+const SPREADS_COLLECTION = 'ST_BCS_M5_COLLE';
+const PRODUCT_CACHE_COLLECTION = 'ST_BCS_M5_CACHE';
 
 // =====================
 // Logging helpers
@@ -220,7 +366,7 @@ const LOG_TO_FILE =
     process.env.SUPERTREND_BCS_LIVE_LOG_TO_FILE || 'false',
   ).toLowerCase() === 'true';
 const LOG_DIR = process.env.SUPERTREND_BCS_LIVE_LOG_DIR || './logs/livetrade';
-const LOG_FILE_PREFIX = 'ST_BCS_BTC_LIVE';
+const LOG_FILE_PREFIX = 'ST_BCS_M5_LOG';
 
 function ensureLogDir() {
   if (!LOG_TO_FILE) return;
@@ -255,19 +401,19 @@ function nowTs(tz = TZ) {
   return moment().tz(tz).format('YYYY-MM-DD HH:mm:ss');
 }
 function info(msg) {
-  const line = `[${nowTs()}] [ST_BCS_BTC_LIVE] ${msg}`;
+  const line = `[${nowTs()}] [ST_BCS_M5_LOG] ${msg}`;
   // eslint-disable-next-line no-console
   // console.log(line);
   appendFileLog(line);
 }
 function warn(msg) {
-  const line = `[${nowTs()}] [ST_BCS_BTC_LIVE][WARN] ${msg}`;
+  const line = `[${nowTs()}] [ST_BCS_M5_LOG][WARN] ${msg}`;
   // eslint-disable-next-line no-console
   console.warn(line);
   appendFileLog(line);
 }
 function error(msg, err) {
-  const line = `[${nowTs()}] [ST_BCS_BTC_LIVE][ERROR] ${msg}`;
+  const line = `[${nowTs()}] [ST_BCS_M5_LOG][ERROR] ${msg}`;
   // eslint-disable-next-line no-console
   console.error(line);
   appendFileLog(line);
@@ -518,7 +664,7 @@ async function pickMtmMarkPriceForSymbol(
     Number.isFinite(ltp) && Number.isFinite(age) && age <= MTM_STALE_MS;
   if (hasRecentTrade) return ltp;
 
-  return ltp;
+  return Number.NaN;
 }
 
 // =====================
@@ -813,6 +959,55 @@ function tfToMs(tf) {
   throw new Error(`Unsupported timeframe: ${tf}`);
 }
 
+function elapsedMsInCurrentTf(nowIst, tfMs) {
+  const nowMs = nowIst ? Number(nowIst.valueOf()) : Date.now();
+  return ((nowMs % tfMs) + tfMs) % tfMs;
+}
+
+function minElapsedMsForTf(tfMs, elapsedPct) {
+  const pct = Math.min(100, Math.max(0, Number(elapsedPct || 0)));
+  return Math.floor((tfMs * pct) / 100);
+}
+
+function isCandleClosedAt({
+  candleTsMs,
+  tfMs,
+  nowMs,
+  candleGraceSeconds = 0,
+  candleTsIsClose = false,
+}) {
+  const graceMs = Math.max(0, Number(candleGraceSeconds || 0)) * 1000;
+  const closeMs = candleTsIsClose ? candleTsMs : candleTsMs + tfMs;
+  return nowMs >= closeMs + graceMs;
+}
+
+function isNextCandleClosedAfterSignal({
+  signalCandleTsMs,
+  tfMs,
+  nowMs,
+  candleGraceSeconds = 0,
+  candleTsIsClose = false,
+}) {
+  const graceMs = Math.max(0, Number(candleGraceSeconds || 0)) * 1000;
+  const signalCloseMs = candleTsIsClose
+    ? signalCandleTsMs
+    : signalCandleTsMs + tfMs;
+  const nextCloseMs = signalCloseMs + tfMs;
+  return nowMs >= nextCloseMs + graceMs;
+}
+
+function buildFormingSignalStateKey(expiry, tf, side, signalTsMs) {
+  return `${expiry}|${tf}|${side}|${signalTsMs}`;
+}
+
+function clearFormingSignalStateForPrefix(prefix, keepKey = null) {
+  for (const k of formingSignalHoldState.keys()) {
+    if (!k.startsWith(prefix)) continue;
+    if (keepKey && k === keepKey) continue;
+    formingSignalHoldState.delete(k);
+  }
+}
+
 function weekdayKey(nowIst) {
   const wd = nowIst.format('ddd').toUpperCase(); // Mon, Tue ...
   return wd.slice(0, 3);
@@ -830,11 +1025,12 @@ function hhmmToMoment(dayStr, hhmm, tz) {
     .millisecond(0);
 }
 
-function getActiveDailyExpiry(nowIst) {
-  const dayStr = nowIst.format('YYYY-MM-DD');
-  const cutoff = hhmmToMoment(dayStr, DAILY_EXPIRY_CUTOFF, TZ);
+function getActiveWeeklyExpiry(nowIst) {
+  const friday = nowIst.clone().isoWeekday(5);
+  const dayStr = friday.format('YYYY-MM-DD');
+  const cutoff = hhmmToMoment(dayStr, WEEKLY_EXPIRY_CUTOFF, TZ);
   if (nowIst.isSameOrAfter(cutoff))
-    return nowIst.clone().add(1, 'day').format('YYYY-MM-DD');
+    return friday.add(7, 'days').format('YYYY-MM-DD');
   return dayStr;
 }
 
@@ -897,6 +1093,7 @@ function pickLastConfirmedCandle(
   now = new Date(),
   allowFormingCandle = false,
   candleGraceSeconds = 0,
+  candleTsIsClose = false,
 ) {
   if (!candles || !candles.length) return null;
   const nowMs = now.getTime();
@@ -904,11 +1101,73 @@ function pickLastConfirmedCandle(
 
   for (let i = candles.length - 1; i >= 0; i -= 1) {
     const c = candles[i];
-    const start = new Date(c.ts).getTime();
-    const end = start + tfMs;
+    const tsMs = new Date(c.ts).getTime();
+    const end = candleTsIsClose ? tsMs : tsMs + tfMs;
     const isClosed = nowMs >= end + graceMs;
     if (allowFormingCandle) return c;
     if (isClosed) return c;
+  }
+  return null;
+}
+
+function stTrendDir(sig) {
+  if (!sig) return null;
+  const stx = sig.supertrend || {};
+  const isUp = stx.isUpTrend ?? sig.isUpTrend;
+  const trendVal = stx.trend ?? sig.trend;
+  if (isUp === true || Number(trendVal) === 1) return 'UP';
+  if (isUp === false || Number(trendVal) === -1) return 'DOWN';
+  return null;
+}
+
+function tfEnabled(tf) {
+  return String(tf || '').trim().length > 0;
+}
+
+function envPositiveInt(envKey, fallback) {
+  const n = parseInt(String(process.env[envKey] || ''), 10);
+  if (Number.isInteger(n) && n > 0) return n;
+  return fallback;
+}
+
+function normalizeMomentumEmaPair(fast, slow, tag) {
+  if (fast < slow) return { fast, slow };
+  const fallbackFast = 9;
+  const fallbackSlow = 21;
+  warn(
+    `[${tag}] Invalid momentum EMA config: FAST_EMA=${fast}, SLOW_EMA=${slow}. ` +
+      `FAST_EMA must be < SLOW_EMA. Falling back to ${fallbackFast}/${fallbackSlow}.`,
+  );
+  return { fast: fallbackFast, slow: fallbackSlow };
+}
+
+function emaMomentumDir(candles, fastPeriod, slowPeriod) {
+  if (!Array.isArray(candles) || candles.length === 0) return null;
+  const fast = Number(fastPeriod);
+  const slow = Number(slowPeriod);
+  if (
+    !Number.isInteger(fast) ||
+    !Number.isInteger(slow) ||
+    fast < 1 ||
+    slow < 1
+  )
+    return null;
+  if (candles.length < Math.max(fast, slow)) return null;
+
+  try {
+    const withEma = addEMAsToCandles(candles, {
+      periods: [fast, slow],
+      priceField: 'close',
+    });
+    const last = withEma[withEma.length - 1];
+    const fastVal = Number(last?.emas?.[fast]);
+    const slowVal = Number(last?.emas?.[slow]);
+    if (!Number.isFinite(fastVal) || !Number.isFinite(slowVal)) return null;
+    if (fastVal > slowVal) return 'UP';
+    if (fastVal < slowVal) return 'DOWN';
+  } catch (err) {
+    warn(`Momentum EMA calculation failed: ${err?.message || err}`);
+    return null;
   }
   return null;
 }
@@ -940,6 +1199,7 @@ async function buildTodaySupertrend({
   minCandles,
   candleGraceSeconds,
   allowFormingCandle,
+  candleTsIsClose,
   futCandlesCollection,
 }) {
   const tfMs = tfToMs(timeInterval);
@@ -971,12 +1231,40 @@ async function buildTodaySupertrend({
     collectionName: futCandlesCollection,
   });
 
+  // Heuristic safety: prevent "forming candle" entry if candle `ts` is actually OPEN-time
+  // but config is set to treat it as CLOSE-time. We detect this by checking if lastTradeTime > ts.
+  let candleTsIsCloseResolved = candleTsIsClose;
+  if (candleTsIsCloseResolved && candles && candles.length) {
+    const last = candles[candles.length - 1];
+    const tsMs = new Date(last.ts).getTime();
+    const lttRaw = last.lastTradeTime;
+    const ltt =
+      lttRaw instanceof Date
+        ? lttRaw
+        : lttRaw && lttRaw.$date
+          ? new Date(lttRaw.$date)
+          : null;
+
+    if (ltt && ltt.getTime() > tsMs + 2000) {
+      if (!candleTsHeuristicWarned) {
+        warn(
+          `Detected fut candle lastTradeTime (${new Date(ltt).toISOString()}) > ts (${new Date(tsMs).toISOString()}). ` +
+            `Assuming candle ts is OPEN-time (CANDLE_TS_IS_CLOSE=false) to prevent forming-candle entry. ` +
+            `Set SUPERTREND_BCS_LIVE_CANDLE_TS_IS_CLOSE=false explicitly in .env.`,
+        );
+        candleTsHeuristicWarned = true;
+      }
+      candleTsIsCloseResolved = false;
+    }
+  }
+
   const lastConfirmed = pickLastConfirmedCandle(
     candles,
     tfMs,
     new Date(),
     allowFormingCandle,
     candleGraceSeconds,
+    candleTsIsCloseResolved,
   );
 
   if (!candles.length || !lastConfirmed) {
@@ -1183,6 +1471,7 @@ async function pickCeLegsFromTicks({
   underlyingPrice,
   mainMoneyness,
   hedgeMoneyness,
+  hedgeEnabled = true,
   asOfUtc,
 }) {
   const strikes = await getAvailableStrikesForExpiry(optColl, {
@@ -1199,14 +1488,14 @@ async function pickCeLegsFromTicks({
     mainMoneyness,
     'C',
   );
-  const hedgeStrike = pickStrikeByMoneyness(
-    strikes,
-    underlyingPrice,
-    hedgeMoneyness,
-    'C',
-  );
+  const hedgeStrike = hedgeEnabled
+    ? pickStrikeByMoneyness(strikes, underlyingPrice, hedgeMoneyness, 'C')
+    : null;
 
-  if (!Number.isFinite(mainStrike) || !Number.isFinite(hedgeStrike)) {
+  if (
+    !Number.isFinite(mainStrike) ||
+    (hedgeEnabled && !Number.isFinite(hedgeStrike))
+  ) {
     return {
       ok: false,
       reason: 'STRIKE_OUT_OF_RANGE',
@@ -1223,15 +1512,21 @@ async function pickCeLegsFromTicks({
     strike: mainStrike,
     atOrBeforeUtc: asOfUtc,
   });
-  const hedgeTick = await getLatestOptionTickByStrike(optColl, {
-    underlying: 'BTC',
-    optionType: 'C',
-    expiry,
-    strike: hedgeStrike,
-    atOrBeforeUtc: asOfUtc,
-  });
+  const hedgeTick = hedgeEnabled
+    ? await getLatestOptionTickByStrike(optColl, {
+        underlying: 'BTC',
+        optionType: 'C',
+        expiry,
+        strike: hedgeStrike,
+        atOrBeforeUtc: asOfUtc,
+      })
+    : null;
 
-  if (!mainTick || !hedgeTick || !mainTick.symbol || !hedgeTick.symbol) {
+  if (
+    !mainTick ||
+    !mainTick.symbol ||
+    (hedgeEnabled && (!hedgeTick || !hedgeTick.symbol))
+  ) {
     return {
       ok: false,
       reason: 'NO_TICKS_FOR_SELECTED_STRIKES',
@@ -1251,13 +1546,15 @@ async function pickCeLegsFromTicks({
       ltp: Number(mainTick.price),
       tickTime: mainTick.exchTradeTime,
     },
-    hedge: {
-      symbol: hedgeTick.symbol,
-      strike: Number(hedgeTick.strike),
-      optionType: 'C',
-      ltp: Number(hedgeTick.price),
-      tickTime: hedgeTick.exchTradeTime,
-    },
+    hedge: hedgeEnabled
+      ? {
+          symbol: hedgeTick.symbol,
+          strike: Number(hedgeTick.strike),
+          optionType: 'C',
+          ltp: Number(hedgeTick.price),
+          tickTime: hedgeTick.exchTradeTime,
+        }
+      : null,
     mainStrike,
     hedgeStrike,
   };
@@ -1269,10 +1566,25 @@ function buildExitPricesForShort(entryPrice, stopLossPct, targetPct) {
   return { stopLossPrice: sl, targetPrice: tp };
 }
 
+function buildTrailingStopForShort(lowWater, trailingStopPct) {
+  if (!Number.isFinite(lowWater) || !Number.isFinite(trailingStopPct))
+    return Number.NaN;
+  if (trailingStopPct <= 0) return Number.NaN;
+  return lowWater * (1 + trailingStopPct / 100);
+}
+
 function computeSpreadPnl({ mainEntry, mainExit, hedgeEntry, hedgeExit, qty }) {
   const mainPoints = Number(mainEntry) - Number(mainExit); // short leg
   const hedgePoints = Number(hedgeExit) - Number(hedgeEntry); // long leg
   const netPoints = mainPoints + hedgePoints;
+  const net = netPoints * qty;
+  return { qty, mainPoints, hedgePoints, netPoints, net };
+}
+
+function computeShortOnlyPnl({ mainEntry, mainExit, qty }) {
+  const mainPoints = Number(mainEntry) - Number(mainExit); // short leg
+  const hedgePoints = 0;
+  const netPoints = mainPoints;
   const net = netPoints * qty;
   return { qty, mainPoints, hedgePoints, netPoints, net };
 }
@@ -1356,28 +1668,31 @@ async function findInFlightSpreadForExpiry(expiryStr) {
 
 async function executeEntry({ runId, expiry, underlyingPrice, legs, nowIst }) {
   const mainSymbol = legs.main.symbol;
-  const hedgeSymbol = legs.hedge.symbol;
+  const hasHedge = !!legs?.hedge?.symbol;
+  const hedgeSymbol = hasHedge ? legs.hedge.symbol : null;
 
-  const hedgePid = await getProductIdBySymbol(hedgeSymbol);
   const mainPid = await getProductIdBySymbol(mainSymbol);
+  const hedgePid = hasHedge ? await getProductIdBySymbol(hedgeSymbol) : null;
 
   // Set order leverage (best-effort, non-blocking)
-  await ensureOrderLeverageOnce(hedgePid, 'HEDGE', 'ENTRY_HEDGE');
+  if (hasHedge) await ensureOrderLeverageOnce(hedgePid, 'HEDGE', 'ENTRY_HEDGE');
   await ensureOrderLeverageOnce(mainPid, 'MAIN', 'ENTRY_MAIN');
 
   // Hedge first (BUY), then main (SELL)
-  const hedgeClientId = buildClientOrderId(runId, 'HB');
+  const hedgeClientId = hasHedge ? buildClientOrderId(runId, 'HB') : null;
   const mainClientId = buildClientOrderId(runId, 'MS');
 
   const entryStart = Date.now();
-  const hedgeOrder = await placeOrder({
-    product_id: hedgePid,
-    side: 'buy',
-    size: ORDER_SIZE,
-    order_type: 'market_order',
-    reduce_only: false,
-    client_order_id: hedgeClientId,
-  });
+  const hedgeOrder = hasHedge
+    ? await placeOrder({
+        product_id: hedgePid,
+        side: 'buy',
+        size: ORDER_SIZE,
+        order_type: 'market_order',
+        reduce_only: false,
+        client_order_id: hedgeClientId,
+      })
+    : null;
 
   const mainOrder = await placeOrder({
     product_id: mainPid,
@@ -1396,7 +1711,7 @@ async function executeEntry({ runId, expiry, underlyingPrice, legs, nowIst }) {
   const startMicros = (Date.now() - 2 * 60 * 1000) * 1000;
 
   const fills = await getRecentFills({
-    product_ids: [mainPid, hedgePid],
+    product_ids: hasHedge ? [mainPid, hedgePid] : [mainPid],
     startTimeMicros: startMicros,
     endTimeMicros: endMicros,
     page_size: 200,
@@ -1405,14 +1720,17 @@ async function executeEntry({ runId, expiry, underlyingPrice, legs, nowIst }) {
   const mainFills = fills.filter(
     (f) => String(f.order_id) === String(mainOrder.id),
   );
-  const hedgeFills = fills.filter(
-    (f) => String(f.order_id) === String(hedgeOrder.id),
-  );
+  const hedgeFills =
+    hasHedge && hedgeOrder
+      ? fills.filter((f) => String(f.order_id) === String(hedgeOrder.id))
+      : [];
 
   const mainFillPrice =
     computeVwapFromFills(mainFills) ?? Number(legs.main.ltp);
   const hedgeFillPrice =
-    computeVwapFromFills(hedgeFills) ?? Number(legs.hedge.ltp);
+    hasHedge
+      ? computeVwapFromFills(hedgeFills) ?? Number(legs.hedge.ltp)
+      : null;
 
   const tookMs = Date.now() - entryStart;
 
@@ -1423,12 +1741,14 @@ async function executeEntry({ runId, expiry, underlyingPrice, legs, nowIst }) {
       order: mainOrder,
       fillPrice: mainFillPrice,
     },
-    hedge: {
-      symbol: hedgeSymbol,
-      product_id: hedgePid,
-      order: hedgeOrder,
-      fillPrice: hedgeFillPrice,
-    },
+    hedge: hasHedge
+      ? {
+          symbol: hedgeSymbol,
+          product_id: hedgePid,
+          order: hedgeOrder,
+          fillPrice: hedgeFillPrice,
+        }
+      : null,
     tookMs,
     underlyingPrice,
     expiry,
@@ -1438,76 +1758,144 @@ async function executeEntry({ runId, expiry, underlyingPrice, legs, nowIst }) {
 
 async function executeExit({ runId, open, reason, nowIst }) {
   const mainPid = Number(open?.main?.product_id);
+  const hasHedge = !!open?.hedge?.symbol;
   const hedgePid = Number(open?.hedge?.product_id);
-  if (!Number.isFinite(mainPid) || !Number.isFinite(hedgePid))
+  if (!Number.isFinite(mainPid))
     throw new Error('Missing product_id on open spread doc.');
+  if (hasHedge && !Number.isFinite(hedgePid))
+    throw new Error('Missing hedge product_id on open spread doc.');
 
   // Set order leverage for exit orders as well (best-effort, non-blocking)
   await ensureOrderLeverageOnce(mainPid, 'MAIN', 'EXIT_MAIN');
-  await ensureOrderLeverageOnce(hedgePid, 'HEDGE', 'EXIT_HEDGE');
+  if (hasHedge) await ensureOrderLeverageOnce(hedgePid, 'HEDGE', 'EXIT_HEDGE');
 
   const exitStart = Date.now();
 
   // Main first (BUY) to remove naked short exposure, then hedge (SELL)
   const mainClientId = buildClientOrderId(runId, 'MBE');
-  const hedgeClientId = buildClientOrderId(runId, 'HSE');
+  const hedgeClientId = hasHedge ? buildClientOrderId(runId, 'HSE') : null;
 
-  const mainExitOrder = await placeOrder({
-    product_id: mainPid,
-    side: 'buy',
-    size: ORDER_SIZE,
-    order_type: 'market_order',
-    reduce_only: true,
-    client_order_id: mainClientId,
+  const parseDeltaErrorCode = (err) => {
+    const msg = String(err?.message || '');
+    const m = msg.match(/"code":"([^"]+)"/);
+    return m ? m[1] : null;
+  };
+  const placeExitLeg = async ({ legName, orderPayload }) => {
+    try {
+      const order = await placeOrder(orderPayload);
+      return { status: 'PLACED', order, errorCode: null, errorMessage: null };
+    } catch (err) {
+      const errorCode = parseDeltaErrorCode(err);
+      const errorMessage = String(err?.message || err);
+      if (errorCode === 'no_position_for_reduce_only') {
+        warn(
+          `EXIT leg=${legName} treated as already closed (reduce_only no position).`,
+        );
+        return {
+          status: 'ALREADY_CLOSED',
+          order: null,
+          errorCode,
+          errorMessage,
+        };
+      }
+      warn(
+        `EXIT leg=${legName} failed errorCode=${errorCode || 'UNKNOWN'} message=${errorMessage}`,
+      );
+      return { status: 'FAILED', order: null, errorCode, errorMessage };
+    }
+  };
+
+  const mainLeg = await placeExitLeg({
+    legName: 'MAIN',
+    orderPayload: {
+      product_id: mainPid,
+      side: 'buy',
+      size: ORDER_SIZE,
+      order_type: 'market_order',
+      reduce_only: true,
+      client_order_id: mainClientId,
+    },
   });
+  const hedgeLeg = hasHedge
+    ? await placeExitLeg({
+        legName: 'HEDGE',
+        orderPayload: {
+          product_id: hedgePid,
+          side: 'sell',
+          size: ORDER_SIZE,
+          order_type: 'market_order',
+          reduce_only: true,
+          client_order_id: hedgeClientId,
+        },
+      })
+    : { status: 'SKIPPED', order: null, errorCode: null, errorMessage: null };
 
-  const hedgeExitOrder = await placeOrder({
-    product_id: hedgePid,
-    side: 'sell',
-    size: ORDER_SIZE,
-    order_type: 'market_order',
-    reduce_only: true,
-    client_order_id: hedgeClientId,
-  });
+  const placedProductIds = [];
+  if (mainLeg.order) placedProductIds.push(mainPid);
+  if (hedgeLeg.order) placedProductIds.push(hedgePid);
+  const fills =
+    placedProductIds.length > 0
+      ? await getRecentFills({
+          product_ids: placedProductIds,
+          startTimeMicros: (Date.now() - 2 * 60 * 1000) * 1000,
+          endTimeMicros: Date.now() * 1000,
+          page_size: 200,
+        })
+      : [];
 
-  const endMicros = Date.now() * 1000;
-  const startMicros = (Date.now() - 2 * 60 * 1000) * 1000;
-
-  const fills = await getRecentFills({
-    product_ids: [mainPid, hedgePid],
-    startTimeMicros: startMicros,
-    endTimeMicros: endMicros,
-    page_size: 200,
-  });
-
-  const mainFills = fills.filter(
-    (f) => String(f.order_id) === String(mainExitOrder.id),
-  );
-  const hedgeFills = fills.filter(
-    (f) => String(f.order_id) === String(hedgeExitOrder.id),
-  );
+  const mainFills = mainLeg.order
+    ? fills.filter((f) => String(f.order_id) === String(mainLeg.order.id))
+    : [];
+  const hedgeFills = hedgeLeg.order
+    ? fills.filter((f) => String(f.order_id) === String(hedgeLeg.order.id))
+    : [];
 
   const mainExitPrice =
     computeVwapFromFills(mainFills) ??
     Number(open?.mtm?.mainPrice ?? open?.main?.entry?.price);
   const hedgeExitPrice =
-    computeVwapFromFills(hedgeFills) ??
-    Number(open?.mtm?.hedgePrice ?? open?.hedge?.entry?.price);
+    hasHedge
+      ? computeVwapFromFills(hedgeFills) ??
+        Number(open?.mtm?.hedgePrice ?? open?.hedge?.entry?.price)
+      : null;
 
-  const pnl = computeSpreadPnl({
-    mainEntry: Number(open?.main?.entry?.price),
-    mainExit: mainExitPrice,
-    hedgeEntry: Number(open?.hedge?.entry?.price),
-    hedgeExit: hedgeExitPrice,
-    qty: resolveQtyForPnl(open),
-  });
+  const pnl = hasHedge
+    ? computeSpreadPnl({
+        mainEntry: Number(open?.main?.entry?.price),
+        mainExit: mainExitPrice,
+        hedgeEntry: Number(open?.hedge?.entry?.price),
+        hedgeExit: hedgeExitPrice,
+        qty: resolveQtyForPnl(open),
+      })
+    : computeShortOnlyPnl({
+        mainEntry: Number(open?.main?.entry?.price),
+        mainExit: mainExitPrice,
+        qty: resolveQtyForPnl(open),
+      });
 
   const tookMs = Date.now() - exitStart;
+  const completed = mainLeg.status !== 'FAILED' && hedgeLeg.status !== 'FAILED';
 
   return {
+    completed,
     reason,
     time: nowIst.toISOString(true),
-    orders: { mainExitOrder, hedgeExitOrder },
+    orders: {
+      mainExitOrder: mainLeg.order,
+      hedgeExitOrder: hedgeLeg.order,
+    },
+    legs: {
+      main: {
+        status: mainLeg.status,
+        errorCode: mainLeg.errorCode,
+        errorMessage: mainLeg.errorMessage,
+      },
+      hedge: {
+        status: hedgeLeg.status,
+        errorCode: hedgeLeg.errorCode,
+        errorMessage: hedgeLeg.errorMessage,
+      },
+    },
     prices: { mainExitPrice, hedgeExitPrice },
     pnl,
     tookMs,
@@ -1533,7 +1921,8 @@ async function maybeEnterTrade(nowIst) {
   if (isInNoTradeWindow(nowIst))
     return { took: false, reason: 'NO_TRADE_WINDOW' };
 
-  const expiry = getActiveDailyExpiry(nowIst);
+  const expiry = getActiveWeeklyExpiry(nowIst);
+  const signalStatePrefix = `${expiry}|${INDEX_TF}|SELL|`;
 
   // max trades/day guard (keyed by expiry)
   if (getDailyTradeCount(expiry) >= MAX_TRADES_PER_DAY)
@@ -1549,12 +1938,13 @@ async function maybeEnterTrade(nowIst) {
     stockName: STOCK_NAME,
     timeInterval: INDEX_TF,
     fromTime: FROM_TIME,
-    atrPeriod: ATR_PERIOD,
-    multiplier: MULTIPLIER,
+    atrPeriod: ENTRY_ATR_PERIOD,
+    multiplier: ENTRY_MULTIPLIER,
     changeAtrCalculation: CHANGE_ATR_CALC,
     minCandles: MIN_CANDLES,
     candleGraceSeconds: CANDLE_GRACE_SECONDS,
     allowFormingCandle: ALLOW_FORMING_CANDLE,
+    candleTsIsClose: CANDLE_TS_IS_CLOSE,
     futCandlesCollection: FUT_CANDLES_COLLECTION,
   });
 
@@ -1563,11 +1953,161 @@ async function maybeEnterTrade(nowIst) {
   if ((st.candles || []).length < MIN_CANDLES)
     return { took: false, reason: 'INSUFFICIENT_CANDLES' };
 
+  // Optional Higher Timeframe (HTF) trend filter:
+  // - Entry signal is on INDEX_TF (execution TF)
+  // - Trend confirmation is on HTF_INDEX_TF (e.g., M30)
+  if (HTF_ENABLED && tfEnabled(HTF_INDEX_TF) && HTF_INDEX_TF !== INDEX_TF) {
+    const htf = await buildTodaySupertrend({
+      nowIst,
+      stockSymbol: STOCK_SYMBOL,
+      stockName: STOCK_NAME,
+      timeInterval: HTF_INDEX_TF,
+      fromTime: FROM_TIME,
+      atrPeriod: TREND_ATR_PERIOD,
+      multiplier: TREND_MULTIPLIER,
+      changeAtrCalculation: CHANGE_ATR_CALC,
+      minCandles: HTF_MIN_CANDLES,
+      candleGraceSeconds: HTF_CANDLE_GRACE_SECONDS,
+      allowFormingCandle: ALLOW_FORMING_CANDLE,
+      candleTsIsClose: CANDLE_TS_IS_CLOSE,
+      futCandlesCollection: FUT_CANDLES_COLLECTION,
+    });
+
+    const htfSig = htf.lastConfirmedStCandle;
+    if (!htfSig) return { took: false, reason: 'NO_HTF_FUT_CANDLES' };
+    if ((htf.candles || []).length < HTF_MIN_CANDLES)
+      return { took: false, reason: 'INSUFFICIENT_HTF_CANDLES' };
+
+    const dir = stTrendDir(htfSig);
+    if (dir !== 'DOWN')
+      return {
+        took: false,
+        reason: 'HTF_TREND_MISMATCH',
+        meta: { htfDir: dir, htfTf: HTF_INDEX_TF },
+      };
+  } else if (HTF_ENABLED && tfEnabled(HTF_INDEX_TF) && HTF_INDEX_TF === INDEX_TF) {
+    // If HTF is set equal to INDEX_TF, treat it as a no-op (keeps env flexible).
+  }
+
+  // Optional momentum HTF filter using EMA fast/slow alignment (e.g., M10 EMA9/EMA21).
+  // Momentum is evaluated only on closed candles to avoid intra-candle EMA flips.
+  if (MOMENTUM_HTF_ENABLED) {
+    if (!tfEnabled(MOMENTUM_HTF_INDEX_TF)) {
+      return { took: false, reason: 'MOMENTUM_HTF_TF_NOT_SET' };
+    }
+
+    const momentum = await buildTodaySupertrend({
+      nowIst,
+      stockSymbol: STOCK_SYMBOL,
+      stockName: STOCK_NAME,
+      timeInterval: MOMENTUM_HTF_INDEX_TF,
+      fromTime: FROM_TIME,
+      atrPeriod: TREND_ATR_PERIOD,
+      multiplier: TREND_MULTIPLIER,
+      changeAtrCalculation: CHANGE_ATR_CALC,
+      minCandles: MOMENTUM_MIN_CANDLES,
+      candleGraceSeconds: MOMENTUM_CANDLE_GRACE_SECONDS,
+      allowFormingCandle: false,
+      candleTsIsClose: CANDLE_TS_IS_CLOSE,
+      futCandlesCollection: FUT_CANDLES_COLLECTION,
+    });
+
+    if ((momentum.candles || []).length < MOMENTUM_MIN_CANDLES) {
+      return { took: false, reason: 'INSUFFICIENT_MOMENTUM_CANDLES' };
+    }
+
+    const mDir = emaMomentumDir(
+      momentum.candles,
+      MOMENTUM_FAST_EMA,
+      MOMENTUM_SLOW_EMA,
+    );
+    if (mDir !== 'DOWN') {
+      return {
+        took: false,
+        reason: 'MOMENTUM_TREND_MISMATCH',
+        meta: {
+          momentumDir: mDir,
+          momentumTf: MOMENTUM_HTF_INDEX_TF,
+          fastEma: MOMENTUM_FAST_EMA,
+          slowEma: MOMENTUM_SLOW_EMA,
+        },
+      };
+    }
+  }
+
   const sellSignal = !!(
     signalCandle?.supertrend?.sellSignal ?? signalCandle?.sellSignal
   );
-  if (!FORCE_ENTRY && !sellSignal)
+  if (!FORCE_ENTRY && !sellSignal) {
+    clearFormingSignalStateForPrefix(signalStatePrefix);
     return { took: false, reason: 'NO_SELL_SIGNAL' };
+  }
+
+  const nowMs = Number(nowIst.valueOf());
+  const indexTfMs = tfToMs(INDEX_TF);
+  if (ALLOW_FORMING_CANDLE) {
+    const minElapsedMs = minElapsedMsForTf(indexTfMs, FORMING_MIN_ELAPSED_PCT);
+    const elapsedMs = elapsedMsInCurrentTf(nowIst, indexTfMs);
+    if (elapsedMs < minElapsedMs) {
+      clearFormingSignalStateForPrefix(signalStatePrefix);
+      info(
+        `ENTRY_BLOCKED reason=FORMING_CANDLE_BEFORE_MIN_ELAPSED tf=${INDEX_TF} elapsedMs=${elapsedMs} requiredElapsedMs=${minElapsedMs} minElapsedPct=${FORMING_MIN_ELAPSED_PCT}`,
+      );
+      return {
+        took: false,
+        reason: 'FORMING_CANDLE_BEFORE_MIN_ELAPSED',
+        meta: {
+          indexTf: INDEX_TF,
+          elapsedMs,
+          requiredElapsedMs: minElapsedMs,
+          minElapsedPct: FORMING_MIN_ELAPSED_PCT,
+        },
+      };
+    }
+  }
+
+  const signalTsMs = new Date(signalCandle.ts).getTime();
+  const isSignalClosedNow = isCandleClosedAt({
+    candleTsMs: signalTsMs,
+    tfMs: indexTfMs,
+    nowMs,
+    candleGraceSeconds: CANDLE_GRACE_SECONDS,
+    candleTsIsClose: CANDLE_TS_IS_CLOSE,
+  });
+  const isFormingSignalEntry = ALLOW_FORMING_CANDLE && !isSignalClosedNow;
+
+  if (isFormingSignalEntry && FORMING_SIGNAL_HOLD_SECS > 0) {
+    const holdMs = Math.floor(FORMING_SIGNAL_HOLD_SECS * 1000);
+    const holdKey = buildFormingSignalStateKey(
+      expiry,
+      INDEX_TF,
+      'SELL',
+      signalTsMs,
+    );
+    const firstSeenMs = formingSignalHoldState.has(holdKey)
+      ? formingSignalHoldState.get(holdKey)
+      : nowMs;
+    if (!formingSignalHoldState.has(holdKey))
+      formingSignalHoldState.set(holdKey, nowMs);
+    clearFormingSignalStateForPrefix(signalStatePrefix, holdKey);
+    const heldMs = nowMs - firstSeenMs;
+    if (heldMs < holdMs) {
+      info(
+        `ENTRY_BLOCKED reason=FORMING_SIGNAL_HOLD_PENDING tf=${INDEX_TF} heldMs=${heldMs} requiredHoldMs=${holdMs} holdSecs=${FORMING_SIGNAL_HOLD_SECS}`,
+      );
+      return {
+        took: false,
+        reason: 'FORMING_SIGNAL_HOLD_PENDING',
+        meta: {
+          holdSecs: FORMING_SIGNAL_HOLD_SECS,
+          heldSecs: Number((heldMs / 1000).toFixed(3)),
+          indexTf: INDEX_TF,
+        },
+      };
+    }
+  } else {
+    clearFormingSignalStateForPrefix(signalStatePrefix);
+  }
 
   const underlyingPrice = Number(signalCandle.close);
   if (!Number.isFinite(underlyingPrice) || underlyingPrice <= 0)
@@ -1583,6 +2123,7 @@ async function maybeEnterTrade(nowIst) {
     underlyingPrice,
     mainMoneyness: MAIN_MONEYNESS,
     hedgeMoneyness: HEDGE_MONEYNESS,
+    hedgeEnabled: HEDGE_ENABLED,
     asOfUtc,
   });
   if (!legs.ok)
@@ -1608,26 +2149,39 @@ async function maybeEnterTrade(nowIst) {
     config: {
       timezone: TZ,
       fromTime: FROM_TIME,
-      atrPeriod: ATR_PERIOD,
-      multiplier: MULTIPLIER,
+      atrPeriod: ENTRY_ATR_PERIOD,
+      multiplier: ENTRY_MULTIPLIER,
+      trendAtrPeriod: TREND_ATR_PERIOD,
+      trendMultiplier: TREND_MULTIPLIER,
+      entryAtrPeriod: ENTRY_ATR_PERIOD,
+      entryMultiplier: ENTRY_MULTIPLIER,
+      exitAtrPeriod: EXIT_ATR_PERIOD,
+      exitMultiplier: EXIT_MULTIPLIER,
       changeAtrCalculation: CHANGE_ATR_CALC,
       stopLossPct: STOPLOSS_PCT,
       stopLossEnabled: STOPLOSS_ENABLED,
+      trailingStopPct: TRAILING_STOP_PCT,
       targetPct: TARGET_PCT,
       mainMoneyness: MAIN_MONEYNESS,
       hedgeMoneyness: HEDGE_MONEYNESS,
+      hedgeEnabled: HEDGE_ENABLED,
       lotSize: LOT_SIZE,
       lots: LOTS,
       qty: QTY,
       minCandles: MIN_CANDLES,
       candleGraceSeconds: CANDLE_GRACE_SECONDS,
+      htfEnabled: HTF_ENABLED,
       allowFormingCandle: ALLOW_FORMING_CANDLE,
+      formingMinElapsedPct: FORMING_MIN_ELAPSED_PCT,
+      formingSignalHoldSecs: FORMING_SIGNAL_HOLD_SECS,
+      exitOnNextOpenMismatch: EXIT_ON_NEXT_OPEN_MISMATCH,
     },
     entry: {
       time: nowIst.toISOString(true),
       underlyingPrice,
       signalCandleTs: signalCandle.ts || null,
       signalCandleDatetime: signalCandle.datetime || null,
+      formingCandleEntry: isFormingSignalEntry,
     },
     main: {
       side: 'SELL',
@@ -1636,59 +2190,104 @@ async function maybeEnterTrade(nowIst) {
       strike: legs.main.strike,
       entry: { time: nowIst.toISOString(true), price: Number(legs.main.ltp) },
     },
-    hedge: {
-      side: 'BUY',
-      optionType: 'C',
-      symbol: legs.hedge.symbol,
-      strike: legs.hedge.strike,
-      entry: { time: nowIst.toISOString(true), price: Number(legs.hedge.ltp) },
-    },
+    hedge: legs.hedge
+      ? {
+          side: 'BUY',
+          optionType: 'C',
+          symbol: legs.hedge.symbol,
+          strike: legs.hedge.strike,
+          entry: { time: nowIst.toISOString(true), price: Number(legs.hedge.ltp) },
+        }
+      : null,
     exit: null,
     pnl: null,
   });
 
-  // Execute live entry
-  const exec = await executeEntry({
-    runId,
-    expiry,
-    underlyingPrice,
-    legs,
-    nowIst,
-  });
+  let exec;
+  try {
+    exec = await executeEntry({
+      runId,
+      expiry,
+      underlyingPrice,
+      legs,
+      nowIst,
+    });
+  } catch (e) {
+    await updateSpreadDoc(entryDoc._id, {
+      status: 'ENTRY_FAILED',
+      entryError: {
+        at: new Date(),
+        message: String(e?.message || e),
+      },
+    });
+    clearFormingSignalStateForPrefix(signalStatePrefix);
+    throw e;
+  }
 
-  await updateSpreadDoc(entryDoc._id, {
-    status: 'OPEN',
-    main: {
-      ...entryDoc.main,
-      product_id: exec.main.product_id,
-      entry: {
-        ...entryDoc.main.entry,
-        price: exec.main.fillPrice,
-        orderId: exec.main.order.id,
-        clientOrderId: exec.main.order.client_order_id || null,
+  try {
+    await updateSpreadDoc(entryDoc._id, {
+      status: 'OPEN',
+      main: {
+        ...entryDoc.main,
+        product_id: exec.main.product_id,
+        entry: {
+          ...entryDoc.main.entry,
+          price: exec.main.fillPrice,
+          orderId: exec.main.order.id,
+          clientOrderId: exec.main.order.client_order_id || null,
+        },
       },
-    },
-    hedge: {
-      ...entryDoc.hedge,
-      product_id: exec.hedge.product_id,
-      entry: {
-        ...entryDoc.hedge.entry,
-        price: exec.hedge.fillPrice,
-        orderId: exec.hedge.order.id,
-        clientOrderId: exec.hedge.order.client_order_id || null,
+      ...(entryDoc.hedge && exec.hedge
+        ? {
+            hedge: {
+              ...entryDoc.hedge,
+              product_id: exec.hedge.product_id,
+              entry: {
+                ...entryDoc.hedge.entry,
+                price: exec.hedge.fillPrice,
+                orderId: exec.hedge.order.id,
+                clientOrderId: exec.hedge.order.client_order_id || null,
+              },
+            },
+          }
+        : {}),
+      trailing:
+        TRAILING_STOP_PCT > 0
+          ? {
+              side: 'SHORT',
+              lowWater: Number(exec.main.fillPrice),
+              stopPrice: buildTrailingStopForShort(
+                Number(exec.main.fillPrice),
+                TRAILING_STOP_PCT,
+              ),
+              pct: TRAILING_STOP_PCT,
+              updatedAt: nowIst.toISOString(true),
+            }
+          : null,
+      entryExecution: { tookMs: exec.tookMs, at: new Date() },
+    });
+  } catch (e) {
+    await updateSpreadDoc(entryDoc._id, {
+      status: 'ENTRY_FAILED',
+      entryError: {
+        at: new Date(),
+        message: `Entry post-processing failed: ${String(e?.message || e)}`,
       },
-    },
-    entryExecution: { tookMs: exec.tookMs, at: new Date() },
-  });
+    });
+    clearFormingSignalStateForPrefix(signalStatePrefix);
+    throw e;
+  }
 
   incDailyTradeCount(expiry);
+  clearFormingSignalStateForPrefix(signalStatePrefix);
 
+  const entryLegText = legs.hedge && exec.hedge
+    ? `main=${legs.main.symbol}@${exec.main.fillPrice} hedge=${legs.hedge.symbol}@${exec.hedge.fillPrice}`
+    : `main=${legs.main.symbol}@${exec.main.fillPrice} hedge=DISABLED`;
   info(
     `ENTRY expiry=${expiry} sellSignal=${sellSignal} underlying=${underlyingPrice.toFixed(
       1,
-    )} main=${legs.main.symbol}@${exec.main.fillPrice} hedge=${
-      legs.hedge.symbol
-    }@${exec.hedge.fillPrice} qty=${QTY}`,
+    )} ${entryLegText} qty=${QTY}`,
   );
   return {
     took: true,
@@ -1713,11 +2312,10 @@ async function maybeExitOpenSpread(nowIst, open) {
     open.main.symbol,
     nowUtc,
   );
-  const hedgeRes = await getLatestOptionTickBySymbolSafe(
-    optColl,
-    open.hedge.symbol,
-    nowUtc,
-  );
+  const hasHedge = !!open?.hedge?.symbol;
+  const hedgeRes = hasHedge
+    ? await getLatestOptionTickBySymbolSafe(optColl, open.hedge.symbol, nowUtc)
+    : { price: Number.NaN, ageMs: null };
 
   // Use latest available mark; if missing, fall back to last MTM, then entry price.
   const prevMainMtm = Number(open?.mtm?.mainPrice);
@@ -1744,6 +2342,28 @@ async function maybeExitOpenSpread(nowIst, open) {
   );
   if (!STOPLOSS_ENABLED) stopLossPrice = Number.NaN;
 
+  const trailingEnabled = Number.isFinite(TRAILING_STOP_PCT) && TRAILING_STOP_PCT > 0;
+  const prevLowWater = Number(open?.trailing?.lowWater);
+  const seedLowWater = Number.isFinite(prevLowWater)
+    ? prevLowWater
+    : Number.isFinite(mainEntry)
+      ? mainEntry
+      : mainMark;
+  const lowWater = trailingEnabled
+    ? Number.isFinite(mainMark)
+      ? Math.min(seedLowWater, mainMark)
+      : seedLowWater
+    : Number.NaN;
+  const trailingStopPrice = trailingEnabled
+    ? buildTrailingStopForShort(lowWater, TRAILING_STOP_PCT)
+    : Number.NaN;
+  const effectiveStopPrice =
+    Number.isFinite(stopLossPrice) && Number.isFinite(trailingStopPrice)
+      ? Math.min(stopLossPrice, trailingStopPrice)
+      : Number.isFinite(stopLossPrice)
+        ? stopLossPrice
+        : trailingStopPrice;
+
   let exitReason = null;
 
   // No-trade window: force exit at/after NO_TRADE_START to avoid holding during daily expiry hour
@@ -1751,10 +2371,60 @@ async function maybeExitOpenSpread(nowIst, open) {
     exitReason = 'NO_TRADE_WINDOW';
 
   if (Number.isFinite(mainMark)) {
-    if (Number.isFinite(stopLossPrice) && mainMark >= stopLossPrice)
+    if (
+      Number.isFinite(trailingStopPrice) &&
+      mainMark >= trailingStopPrice &&
+      (!Number.isFinite(stopLossPrice) || trailingStopPrice <= stopLossPrice)
+    )
+      exitReason = 'TRAILING_STOP_HIT';
+    if (!exitReason && Number.isFinite(effectiveStopPrice) && mainMark >= effectiveStopPrice)
       exitReason = 'STOPLOSS';
     if (!exitReason && Number.isFinite(targetPrice) && mainMark <= targetPrice)
       exitReason = 'TARGET';
+  }
+  if (
+    !exitReason &&
+    EXIT_ON_NEXT_OPEN_MISMATCH &&
+    open?.entry?.formingCandleEntry === true &&
+    !open?.entry?.nextOpenMismatchCheckedAt
+  ) {
+    const signalTsMs = new Date(open?.entry?.signalCandleTs || 0).getTime();
+    const nowMs = Number(nowIst.valueOf());
+    const indexTfMs = tfToMs(INDEX_TF);
+    if (
+      Number.isFinite(signalTsMs) &&
+      signalTsMs > 0 &&
+      isCandleClosedAt({
+        candleTsMs: signalTsMs,
+        tfMs: indexTfMs,
+        nowMs,
+        candleGraceSeconds: CANDLE_GRACE_SECONDS,
+        candleTsIsClose: CANDLE_TS_IS_CLOSE,
+      })
+    ) {
+      const nextOpenSt = await buildTodaySupertrend({
+        nowIst,
+        stockSymbol: STOCK_SYMBOL,
+        stockName: STOCK_NAME,
+        timeInterval: INDEX_TF,
+        fromTime: FROM_TIME,
+        atrPeriod: ENTRY_ATR_PERIOD,
+        multiplier: ENTRY_MULTIPLIER,
+        changeAtrCalculation: CHANGE_ATR_CALC,
+        minCandles: MIN_CANDLES,
+        candleGraceSeconds: CANDLE_GRACE_SECONDS,
+        allowFormingCandle: false,
+        candleTsIsClose: CANDLE_TS_IS_CLOSE,
+        futCandlesCollection: FUT_CANDLES_COLLECTION,
+      });
+      const confirmSig = nextOpenSt.lastConfirmedStCandle;
+      const dir = stTrendDir(confirmSig);
+      await updateSpreadDoc(open._id, {
+        'entry.nextOpenMismatchCheckedAt': nowIst.toISOString(true),
+        'entry.nextOpenMismatchDir': dir || null,
+      });
+      if (dir !== 'DOWN') exitReason = 'NEXT_OPEN_TREND_MISMATCH';
+    }
   }
 
   // SuperTrend reversal: for BCS exit when BUY signal appears
@@ -1763,15 +2433,16 @@ async function maybeExitOpenSpread(nowIst, open) {
       nowIst,
       stockSymbol: STOCK_SYMBOL,
       stockName: STOCK_NAME,
-      timeInterval: INDEX_TF,
+      timeInterval: EXIT_TF,
       fromTime: FROM_TIME,
-      atrPeriod: ATR_PERIOD,
-      multiplier: MULTIPLIER,
+      atrPeriod: EXIT_ATR_PERIOD,
+      multiplier: EXIT_MULTIPLIER,
       changeAtrCalculation: CHANGE_ATR_CALC,
-      minCandles: MIN_CANDLES,
-      candleGraceSeconds: CANDLE_GRACE_SECONDS,
+      minCandles: EXIT_MIN_CANDLES,
+      candleGraceSeconds: EXIT_CANDLE_GRACE_SECONDS,
       // force closed candle evaluation for reversal exit only
       allowFormingCandle: false,
+      candleTsIsClose: CANDLE_TS_IS_CLOSE,
       futCandlesCollection: FUT_CANDLES_COLLECTION,
     });
     const sig = st.lastConfirmedStCandle;
@@ -1792,18 +2463,20 @@ async function maybeExitOpenSpread(nowIst, open) {
       mainMark,
       mainRes?.ageMs,
     );
-    const hedgeMtmMark = await pickMtmMarkPriceForSymbol(
-      open.hedge.symbol,
-      hedgeMark,
-      hedgeRes?.ageMs,
-    );
+    const hedgeMtmMark = hasHedge
+      ? await pickMtmMarkPriceForSymbol(
+          open.hedge.symbol,
+          hedgeMark,
+          hedgeRes?.ageMs,
+        )
+      : Number.NaN;
 
     const hasMain = Number.isFinite(mainMtmMark);
-    const hasHedge = Number.isFinite(hedgeMtmMark);
+    const hasHedgeMtm = Number.isFinite(hedgeMtmMark);
 
-    if (hasMain || hasHedge) {
-      const pnl =
-        hasMain && hasHedge
+    if (hasMain || hasHedgeMtm) {
+      const pnl = hasMain
+        ? hasHedgeMtm
           ? computeSpreadPnl({
               mainEntry: Number(open?.main?.entry?.price),
               mainExit: mainMtmMark,
@@ -1811,15 +2484,33 @@ async function maybeExitOpenSpread(nowIst, open) {
               hedgeExit: hedgeMtmMark,
               qty: resolveQtyForPnl(open),
             })
-          : null;
+          : computeShortOnlyPnl({
+              mainEntry: Number(open?.main?.entry?.price),
+              mainExit: mainMtmMark,
+              qty: resolveQtyForPnl(open),
+            })
+        : null;
 
       await updateSpreadDoc(open._id, {
         mtm: {
           time: nowIst.toISOString(true),
           mainPrice: mainMtmMark,
-          hedgePrice: hedgeMtmMark,
+          hedgePrice: hasHedge ? hedgeMtmMark : null,
           ...(pnl ? { pnl } : {}),
         },
+        ...(trailingEnabled
+          ? {
+              trailing: {
+                side: 'SHORT',
+                lowWater: Number.isFinite(lowWater) ? lowWater : null,
+                stopPrice: Number.isFinite(trailingStopPrice)
+                  ? trailingStopPrice
+                  : null,
+                pct: TRAILING_STOP_PCT,
+                updatedAt: nowIst.toISOString(true),
+              },
+            }
+          : {}),
       });
     }
     return { exited: false };
@@ -1832,6 +2523,12 @@ async function maybeExitOpenSpread(nowIst, open) {
     reason: exitReason,
     nowIst,
   });
+  if (!exec.completed) {
+    info(
+      `EXIT_PENDING reason=${exec.reason} mainStatus=${exec.legs?.main?.status} hedgeStatus=${exec.legs?.hedge?.status} mainErr=${exec.legs?.main?.errorCode || 'NA'} hedgeErr=${exec.legs?.hedge?.errorCode || 'NA'}`,
+    );
+    return { exited: false, reason: 'EXIT_PENDING' };
+  }
 
   await updateSpreadDoc(open._id, {
     status: 'CLOSED',
@@ -1841,12 +2538,26 @@ async function maybeExitOpenSpread(nowIst, open) {
       main: {
         symbol: open.main.symbol,
         price: exec.prices.mainExitPrice,
-        orderId: exec.orders.mainExitOrder.id,
+        orderId: exec.orders.mainExitOrder?.id || null,
       },
-      hedge: {
-        symbol: open.hedge.symbol,
-        price: exec.prices.hedgeExitPrice,
-        orderId: exec.orders.hedgeExitOrder.id,
+      hedge: open?.hedge?.symbol
+        ? {
+            symbol: open.hedge.symbol,
+            price: exec.prices.hedgeExitPrice,
+            orderId: exec.orders.hedgeExitOrder?.id || null,
+          }
+        : null,
+      legs: {
+        main: {
+          status: exec.legs?.main?.status || null,
+          errorCode: exec.legs?.main?.errorCode || null,
+          errorMessage: exec.legs?.main?.errorMessage || null,
+        },
+        hedge: {
+          status: exec.legs?.hedge?.status || null,
+          errorCode: exec.legs?.hedge?.errorCode || null,
+          errorMessage: exec.legs?.hedge?.errorMessage || null,
+        },
       },
     },
     pnl: exec.pnl,
@@ -1856,8 +2567,8 @@ async function maybeExitOpenSpread(nowIst, open) {
   info(
     `EXIT(${exec.reason}) expiry=${open.expiry} main=${open.main.symbol}@${
       exec.prices.mainExitPrice
-    } hedge=${open.hedge.symbol}@${
-      exec.prices.hedgeExitPrice
+    } hedge=${
+      open?.hedge?.symbol ? `${open.hedge.symbol}@${exec.prices.hedgeExitPrice}` : 'DISABLED'
     } net=${exec.pnl.net.toFixed(6)}`,
   );
   return { exited: true, reason: exec.reason, pnl: exec.pnl };
@@ -1865,7 +2576,7 @@ async function maybeExitOpenSpread(nowIst, open) {
 
 async function liveLoopOnce() {
   const nowIst = moment().tz(TZ);
-  const expiry = getActiveDailyExpiry(nowIst);
+  const expiry = getActiveWeeklyExpiry(nowIst);
 
   const open = await findOpenSpreadForExpiry(expiry);
   if (open) {
@@ -1882,7 +2593,7 @@ const SuperTrendBearCallSpreadLiveTradeBTCController = expressAsyncHandler(
   async (req, res, next) => {
     try {
       const nowIst = moment().tz(TZ);
-      const expiry = getActiveDailyExpiry(nowIst);
+      const expiry = getActiveWeeklyExpiry(nowIst);
       const open = await findOpenSpreadForExpiry(expiry);
 
       res.status(200).json({
@@ -1908,16 +2619,24 @@ const SuperTrendBearCallSpreadLiveTradeBTCController = expressAsyncHandler(
           FUT_CANDLES_COLLECTION,
           OPT_TICKS_PREFIX,
           INDEX_TF,
+          HTF_ENABLED,
+          HTF_INDEX_TF,
+          EXIT_TF,
+          HTF_MIN_CANDLES,
+          EXIT_MIN_CANDLES,
+
           FROM_TIME,
-          DAILY_EXPIRY_CUTOFF,
+          WEEKLY_EXPIRY_CUTOFF,
           NO_TRADE_START,
           NO_TRADE_END,
           CLOSE_AT_NO_TRADE_START,
           STOPLOSS_ENABLED,
           STOPLOSS_PCT,
+          TRAILING_STOP_PCT,
           TARGET_PCT,
           MAIN_MONEYNESS,
           HEDGE_MONEYNESS,
+          HEDGE_ENABLED,
           ATR_PERIOD,
           MULTIPLIER,
           CHANGE_ATR_CALC,
@@ -1926,7 +2645,12 @@ const SuperTrendBearCallSpreadLiveTradeBTCController = expressAsyncHandler(
           MAX_TRADES_PER_DAY,
           MIN_CANDLES,
           CANDLE_GRACE_SECONDS,
+          EXIT_CANDLE_GRACE_SECONDS,
+          HTF_CANDLE_GRACE_SECONDS,
           ALLOW_FORMING_CANDLE,
+          FORMING_MIN_ELAPSED_PCT,
+          FORMING_SIGNAL_HOLD_SECS,
+          EXIT_ON_NEXT_OPEN_MISMATCH,
           PNL_POLL_MS,
           HEARTBEAT_MS,
           LOT_SIZE,
@@ -1980,7 +2704,7 @@ function startSuperTrendBearCallSpreadLiveTradeBTCron() {
     pnlTimer = setInterval(async () => {
       try {
         const nowIst = moment().tz(TZ);
-        const expiry = getActiveDailyExpiry(nowIst);
+        const expiry = getActiveWeeklyExpiry(nowIst);
         const open = await findOpenSpreadForExpiry(expiry);
         if (!open) return;
         await maybeExitOpenSpread(nowIst, open); // will update MTM if not exiting
@@ -1997,7 +2721,7 @@ function startSuperTrendBearCallSpreadLiveTradeBTCron() {
     heartbeatTimer = setInterval(async () => {
       try {
         const nowIst = moment().tz(TZ);
-        const activeExpiry = getActiveDailyExpiry(nowIst);
+        const activeExpiry = getActiveWeeklyExpiry(nowIst);
         const openActive = await findInFlightSpreadForExpiry(activeExpiry);
         info(
           `HEARTBEAT now=${nowIst.format(
