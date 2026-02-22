@@ -298,6 +298,9 @@ const PNL_POLL_MS = Math.max(
   2000,
   Number(process.env.SUPERTREND_BPS_LIVE_PNL_POLL_MS || 15000),
 );
+const LOG_SKIP_REASONS =
+  String(process.env.SUPERTREND_BPS_LIVE_LOG_SKIP_REASONS || 'false').toLowerCase() ===
+  'true';
 const HEARTBEAT_MS = Math.max(
   0,
   Number(process.env.SUPERTREND_BPS_LIVE_HEARTBEAT_MS || 15000),
@@ -2592,7 +2595,15 @@ async function liveLoopOnce() {
 
   const open = await findOpenSpreadForExpiry(expiry);
   if (open) return maybeExitOpenSpread(nowIst, open);
-  return maybeEnterTrade(nowIst);
+  const enterRes = await maybeEnterTrade(nowIst);
+  if (LOG_SKIP_REASONS && enterRes && !enterRes.took) {
+    const statusPart = enterRes.status ? ` status=${enterRes.status}` : '';
+    const metaPart = enterRes.meta
+      ? ` meta=${JSON.stringify(enterRes.meta)}`
+      : '';
+    info(`ENTRY_SKIP reason=${enterRes.reason || 'UNKNOWN'}${statusPart}${metaPart}`);
+  }
+  return enterRes;
 }
 
 // =====================
@@ -2661,6 +2672,7 @@ const SuperTrendBullPutSpreadLiveTradeBTCController = expressAsyncHandler(
           FORMING_MIN_ELAPSED_PCT,
           FORMING_SIGNAL_HOLD_SECS,
           EXIT_ON_NEXT_OPEN_MISMATCH,
+          LOG_SKIP_REASONS,
           PNL_POLL_MS,
           HEARTBEAT_MS,
           LOT_SIZE,
