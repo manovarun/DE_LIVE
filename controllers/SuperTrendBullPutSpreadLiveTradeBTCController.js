@@ -19,6 +19,7 @@ const mongoose = require('mongoose');
 const crypto = require('crypto');
 const https = require('https');
 const { URL } = require('url');
+const os = require('os');
 const fs = require('fs');
 const path = require('path');
 
@@ -367,6 +368,13 @@ const ORDER_LEVERAGE_APPLY_TO = String(
 const STRATEGY = 'ST_BPS_M5_STRGY';
 const SPREADS_COLLECTION = 'ST_BPS_M5_COLLE';
 const PRODUCT_CACHE_COLLECTION = 'ST_BPS_M5_CACHE';
+const LOOP_LOCK_COLLECTION = 'ST_LIVE_LOOP_LOCKS';
+const LOOP_LOCK_KEY = `${STRATEGY}:LOOP`;
+const LOOP_LOCK_OWNER = `${os.hostname()}:${process.pid}`;
+const LOOP_LOCK_TTL_MS = Math.max(
+  2000,
+  Number(process.env.SUPERTREND_BPS_LIVE_LOOP_LOCK_TTL_MS || 12000),
+);
 
 // =====================
 // Logging helpers
@@ -498,6 +506,50 @@ async function updateSpreadDoc(id, patch) {
       _id = new mongoose.Types.ObjectId(id);
   } catch (_) {}
   await coll.updateOne({ _id }, { $set: { ...patch, updatedAt: new Date() } });
+}
+
+async function acquireLoopLock() {
+  const db = getDb();
+  const coll = db.collection(LOOP_LOCK_COLLECTION);
+  const now = new Date();
+  const expiresAt = new Date(now.getTime() + LOOP_LOCK_TTL_MS);
+  try {
+    const res = await coll.findOneAndUpdate(
+      {
+        _id: LOOP_LOCK_KEY,
+        $or: [{ expiresAt: { $lte: now } }, { owner: LOOP_LOCK_OWNER }],
+      },
+      {
+        $set: {
+          owner: LOOP_LOCK_OWNER,
+          strategy: STRATEGY,
+          lockType: 'LIVE_LOOP',
+          acquiredAt: now,
+          expiresAt,
+          updatedAt: now,
+        },
+      },
+      { upsert: true, returnDocument: 'after' },
+    );
+    const doc = res && Object.prototype.hasOwnProperty.call(res, 'value')
+      ? res.value
+      : res;
+    return String(doc?.owner || '') === LOOP_LOCK_OWNER;
+  } catch (e) {
+    // Upsert races across processes can throw duplicate key; treat as lock-not-acquired.
+    if (Number(e?.code) === 11000) return false;
+    throw e;
+  }
+}
+
+async function releaseLoopLock() {
+  const db = getDb();
+  const coll = db.collection(LOOP_LOCK_COLLECTION);
+  const now = new Date();
+  await coll.updateOne(
+    { _id: LOOP_LOCK_KEY, owner: LOOP_LOCK_OWNER },
+    { $set: { expiresAt: now, releasedAt: now, updatedAt: now } },
+  );
 }
 
 // =====================
@@ -1912,6 +1964,36 @@ async function executeExit({ runId, open, reason, nowIst }) {
   };
 }
 
+async function getExitReversalState(nowIst) {
+  const st = await buildTodaySupertrend({
+    nowIst,
+    stockSymbol: STOCK_SYMBOL,
+    stockName: STOCK_NAME,
+    timeInterval: EXIT_TF,
+    fromTime: FROM_TIME,
+    atrPeriod: EXIT_ATR_PERIOD,
+    multiplier: EXIT_MULTIPLIER,
+    changeAtrCalculation: CHANGE_ATR_CALC,
+    minCandles: EXIT_MIN_CANDLES,
+    candleGraceSeconds: EXIT_CANDLE_GRACE_SECONDS,
+    // Reversal checks must be closed-candle only.
+    allowFormingCandle: false,
+    candleTsIsClose: CANDLE_TS_IS_CLOSE,
+    futCandlesCollection: FUT_CANDLES_COLLECTION,
+  });
+  const sig = st.lastConfirmedStCandle;
+  const stx = sig?.supertrend || {};
+  const sellSignal = !!(stx.sellSignal ?? sig?.sellSignal);
+  const isDownTrend = !!(stx.isDownTrend ?? sig?.isDownTrend);
+  const trendVal = Number(stx.trend ?? sig?.trend);
+  return {
+    sellSignal,
+    isDownTrend,
+    trendVal,
+    active: sellSignal || isDownTrend || trendVal === -1,
+  };
+}
+
 // =====================
 // Core trading loop
 // =====================
@@ -2118,6 +2200,21 @@ async function maybeEnterTrade(nowIst) {
     }
   } else {
     clearFormingSignalStateForPrefix(signalStatePrefix);
+  }
+
+  // Prevent churn: if EXIT_TF reversal is already active, do not open fresh spreads.
+  const reversalState = await getExitReversalState(nowIst);
+  if (reversalState.active) {
+    return {
+      took: false,
+      reason: 'EXIT_REVERSAL_ACTIVE',
+      meta: {
+        exitTf: EXIT_TF,
+        sellSignal: reversalState.sellSignal,
+        isDownTrend: reversalState.isDownTrend,
+        trend: reversalState.trendVal,
+      },
+    };
   }
 
   const underlyingPrice = Number(signalCandle.close);
@@ -2441,36 +2538,11 @@ async function maybeExitOpenSpread(nowIst, open) {
       if (dir !== 'UP') exitReason = 'NEXT_OPEN_TREND_MISMATCH';
     }
   }
-  // SuperTrend reversal: for BPS exit when SELL signal appears
-  // NOTE: Reversal exit is evaluated ONLY on the last fully-closed (confirmed) SuperTrend candle (no mid-candle exits).
-  // If the reversal signal persists on the closed candle, exit ASAP at the beginning of the next candle (next cron tick).
   if (!exitReason) {
-    const st = await buildTodaySupertrend({
-      nowIst,
-      stockSymbol: STOCK_SYMBOL,
-      stockName: STOCK_NAME,
-      timeInterval: EXIT_TF,
-      fromTime: FROM_TIME,
-      atrPeriod: EXIT_ATR_PERIOD,
-      multiplier: EXIT_MULTIPLIER,
-      changeAtrCalculation: CHANGE_ATR_CALC,
-      minCandles: EXIT_MIN_CANDLES,
-      candleGraceSeconds: EXIT_CANDLE_GRACE_SECONDS,
-      // force closed candle evaluation for reversal exit only
-      allowFormingCandle: false,
-      candleTsIsClose: CANDLE_TS_IS_CLOSE,
-      futCandlesCollection: FUT_CANDLES_COLLECTION,
-    });
-    const sig = st.lastConfirmedStCandle;
-    const stx = sig?.supertrend || {};
-    const sellSignal = !!(stx.sellSignal ?? sig?.sellSignal);
-    const isDownTrend = !!(stx.isDownTrend ?? sig?.isDownTrend);
-    const trendVal = Number(stx.trend ?? sig?.trend);
-
-    // Robust reversal detection: even if the one-candle `sellSignal` is missed (late candle insert),
-    // the DOWN trend state persists and should still trigger the reversal exit.
-    if (sellSignal || isDownTrend || trendVal === -1)
-      exitReason = 'ST_REVERSAL_SELL';
+    // Robust reversal detection: even if one-candle `sellSignal` is missed (late candle insert),
+    // the DOWN trend state still triggers reversal exit.
+    const reversalState = await getExitReversalState(nowIst);
+    if (reversalState.active) exitReason = 'ST_REVERSAL_SELL';
   }
   if (!exitReason) {
     // Update MTM (store best-effort marks; pnl only when both marks are finite)
@@ -2710,8 +2782,18 @@ function startSuperTrendBullPutSpreadLiveTradeBTCron() {
       if (cronInFlight) return;
       cronInFlight = true;
       try {
-        resetOldDailyCounts();
-        await liveLoopOnce();
+        const lockAcquired = await acquireLoopLock();
+        if (!lockAcquired) return;
+        try {
+          resetOldDailyCounts();
+          await liveLoopOnce();
+        } finally {
+          try {
+            await releaseLoopLock();
+          } catch {
+            // silent
+          }
+        }
       } catch (e) {
         error('Cron loop error', e);
       } finally {
@@ -2723,7 +2805,12 @@ function startSuperTrendBullPutSpreadLiveTradeBTCron() {
 
   if (!pnlTimer) {
     pnlTimer = setInterval(async () => {
+      if (cronInFlight) return;
+      cronInFlight = true;
+      let lockAcquired = false;
       try {
+        lockAcquired = await acquireLoopLock();
+        if (!lockAcquired) return;
         const nowIst = moment().tz(TZ);
         const expiry = getActiveWeeklyExpiry(nowIst);
         const open = await findOpenSpreadForExpiry(expiry);
@@ -2731,6 +2818,15 @@ function startSuperTrendBullPutSpreadLiveTradeBTCron() {
         await maybeExitOpenSpread(nowIst, open);
       } catch {
         // silent
+      } finally {
+        if (lockAcquired) {
+          try {
+            await releaseLoopLock();
+          } catch {
+            // silent
+          }
+        }
+        cronInFlight = false;
       }
     }, PNL_POLL_MS);
 
